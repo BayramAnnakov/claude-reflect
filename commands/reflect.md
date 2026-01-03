@@ -18,15 +18,16 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion
 
 ### First-Run Detection (Per-Project)
 
-Check if /reflect has been run in THIS project before:
+Check if /reflect has been run in THIS project before. Run these commands separately:
 
+1. Find the project folder name:
 ```bash
-PROJECT_FOLDER=$(ls ~/.claude/projects/ 2>/dev/null | grep -F "$(pwd | tr '/' '-' | cut -c2-)" | head -1)
-if [ -n "$PROJECT_FOLDER" ]; then
-  test -f ~/.claude/projects/$PROJECT_FOLDER/.reflect-initialized && echo "initialized" || echo "first-run"
-else
-  echo "first-run"
-fi
+ls ~/.claude/projects/ | grep -i "$(basename "$(pwd)")"
+```
+
+2. Check if initialized (replace PROJECT_FOLDER with result from step 1):
+```bash
+test -f ~/.claude/projects/PROJECT_FOLDER/.reflect-initialized && echo "initialized" || echo "first-run"
 ```
 
 **If "first-run" for this project AND user did NOT pass `--scan-history`:**
@@ -88,34 +89,21 @@ Note: Project paths have `/` replaced with `-`. For `/Users/bob/code/myapp`, loo
 
 **0.5b. Extract corrections from session files:**
 
-Session files are JSONL (one JSON object per line). Use this single command to extract user corrections:
+Session files are JSONL. Use jq to extract user messages, then grep for patterns:
 
 ```bash
-# Extract user messages with correction patterns from a session file
-python3 << 'PYEOF'
-import json, sys, re
-patterns = r'(?i)(no,?\s*(use|don.t)|actually|remember:|instead.?\s+use|should be|not\s+\w+.?\s+use|don.t use)'
-for line in open(sys.argv[1]):
-    try:
-        obj = json.loads(line)
-        if obj.get('type') == 'user':
-            msg = obj.get('message', {})
-            if isinstance(msg, dict):
-                for c in msg.get('content', []):
-                    if isinstance(c, dict) and c.get('type') == 'text':
-                        text = c.get('text', '')
-                        if re.search(patterns, text) and len(text) > 10 and len(text) < 500:
-                            print('---')
-                            print(text[:300])
-    except: pass
-PYEOF
+# For each session file, extract user text and find corrections
+cat "$SESSION_FILE" | jq -r 'select(.type=="user") | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -20
 ```
 
-Run this for each session file found in 0.5a, passing the file path as argument.
+Replace `$SESSION_FILE` with actual file path from step 0.5a.
 
-**Alternative (if python unavailable):** Use jq + grep:
+**Scan all files at once:**
 ```bash
-cat "$SESSION_FILE" | jq -r 'select(.type=="user") | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead)"
+for f in ~/.claude/projects/PROJECT_FOLDER/*.jsonl; do
+  echo "=== $(basename $f) ==="
+  cat "$f" | jq -r 'select(.type=="user") | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -5
+done
 ```
 
 **0.5b-extra. Extract tool rejections (HIGH confidence):**
@@ -131,27 +119,35 @@ grep -o "user said:[^\"]*" "$SESSION_FILE" 2>/dev/null | sed 's/user said:\\n//'
 
 **0.5d. LLM Filter (Inline):**
 
-For each extracted correction, evaluate whether it's a REUSABLE learning:
+For each extracted correction, evaluate whether it's a REUSABLE learning.
 
-**REJECT if the correction is:**
-- A question (ends with "?" or asks for information)
-- A one-time task instruction ("save this to folder X", "create file named Y")
-- Context-specific with no reusable pattern (references specific data/names)
-- Too vague to be actionable ("more concise pls", "fix it")
-- Already completed task confirmation ("yes", "ok", "done")
+**IMPORTANT: When in doubt, INCLUDE the learning and let user decide.** Don't auto-reject borderline cases.
 
-**ACCEPT if the correction is:**
-- A tool/technology recommendation ("use X for Y", "don't use Z")
-- An architecture/design pattern ("use database for caching")
-- An environment setup rule ("run on port X", "use venv")
-- A coding convention or best practice
-- A rate limiting or API usage pattern
-- A model name correction ("use gpt-5.1 not gpt-5")
+**REJECT ONLY if clearly:**
+- A question (ends with "?")
+- Pure task confirmation ("yes", "ok", "done", "looks good")
+- Too vague to extract meaning ("fix it", "wrong")
+
+**ACCEPT if it mentions:**
+- Tool/technology/API names or parameters
+- Flags, settings, or configuration options ("enable X", "use flag Y")
+- Best practices or patterns ("always do X", "don't do Y")
+- Model names or versions
+- Rate limits, delays, or timing
+- File paths or environment setup
+
+**BORDERLINE → Get context first:**
+If a correction seems context-specific (like "please enable that flag"), search for surrounding messages to understand WHAT flag/parameter. Often these ARE reusable learnings about API parameters.
+
+```bash
+# Get context around a correction (find line number, then show surrounding)
+grep -n "enable that flag" "$SESSION_FILE" | head -1
+```
 
 For each ACCEPTED correction, create:
-1. An actionable learning in imperative form (e.g., "Use Gemini Flash for extraction tasks")
-2. Suggested scope: "global" (applies to all projects) or "project" (specific to this codebase)
-3. Confidence: high (explicit correction) or medium (implicit pattern)
+1. An actionable learning in imperative form (e.g., "Use gpt-5.1 for reasoning tasks" or "Enable flag X for better results")
+2. Suggested scope: "global" or "project"
+3. Include the actual parameter/value when possible
 
 **0.5e. Deduplicate:**
 - Collect all accepted corrections
@@ -458,14 +454,14 @@ DONE: Applied [N] learnings
 
 ### Step 10: Mark Initialized (Per-Project)
 
-Create marker file for THIS project so first-run detection won't trigger again:
+Create marker file for THIS project so first-run detection won't trigger again.
+Use the PROJECT_FOLDER you found in First-Run Detection:
 
 ```bash
-PROJECT_FOLDER=$(ls ~/.claude/projects/ 2>/dev/null | grep -F "$(pwd | tr '/' '-' | cut -c2-)" | head -1)
-if [ -n "$PROJECT_FOLDER" ]; then
-  touch ~/.claude/projects/$PROJECT_FOLDER/.reflect-initialized
-fi
+touch ~/.claude/projects/PROJECT_FOLDER/.reflect-initialized
 ```
+
+Replace PROJECT_FOLDER with the actual folder name (e.g., `-Users-bob-myproject`).
 
 ## Formatting Rules
 
