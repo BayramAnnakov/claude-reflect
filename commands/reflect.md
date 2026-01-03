@@ -20,6 +20,8 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion
 
 Check if /reflect has been run in THIS project before. Run these commands separately:
 
+**WARNING**: Do NOT combine these into a single compound command with `$(...)`. Claude Code's bash executor mangles subshell syntax. Run each command individually and manually substitute the result.
+
 1. Find the project folder name:
 ```bash
 ls ~/.claude/projects/ | grep -i "$(basename "$(pwd)")"
@@ -89,11 +91,13 @@ Note: Project paths have `/` replaced with `-`. For `/Users/bob/code/myapp`, loo
 
 **0.5b. Extract corrections from session files:**
 
-Session files are JSONL. Use jq to extract user messages, then grep for patterns:
+Session files are JSONL. Use jq to extract user messages, then grep for patterns.
+
+**CRITICAL**: Filter out command expansion messages using `isMeta != true`. Command expansions (like /reflect itself) are stored with `isMeta: true` and contain documentation text that would cause false positives.
 
 ```bash
-# For each session file, extract user text and find corrections
-cat "$SESSION_FILE" | jq -r 'select(.type=="user") | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -20
+# For each session file, extract REAL user text (exclude command expansions)
+cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -20
 ```
 
 Replace `$SESSION_FILE` with actual file path from step 0.5a.
@@ -102,15 +106,22 @@ Replace `$SESSION_FILE` with actual file path from step 0.5a.
 ```bash
 for f in ~/.claude/projects/PROJECT_FOLDER/*.jsonl; do
   echo "=== $(basename $f) ==="
-  cat "$f" | jq -r 'select(.type=="user") | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -5
+  cat "$f" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -5
 done
 ```
 
 **0.5b-extra. Extract tool rejections (HIGH confidence):**
 
-Tool rejections are when user stopped a tool and gave feedback. Look for "user said:" pattern:
+Tool rejections are when user stopped a tool and gave feedback. Use jq to extract from `toolUseResult` fields only (avoids matching documentation text):
+
 ```bash
-grep -o "user said:[^\"]*" "$SESSION_FILE" 2>/dev/null | sed 's/user said:\\n//' | head -10
+# Extract tool rejection feedback from toolUseResult fields
+cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | if type == "string" then . else .stdout // empty end' 2>/dev/null | grep -o "user said:[^\"]*" | sed 's/user said:\\n//' | head -10
+```
+
+**Alternative** - look for rejection context:
+```bash
+cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | strings | select(contains("doesn'"'"'t want to proceed"))' 2>/dev/null | grep -o "user said:.*" | head -10
 ```
 
 **0.5c. Apply date filter if `--days N` specified:**
@@ -188,21 +199,25 @@ Agent files (`agent-*.jsonl`) are sub-conversations; focus on main session files
 
 **2b. Extract tool rejections (HIGH confidence corrections):**
 
-Tool rejections contain "The user doesn't want to proceed...user said: [correction]". Extract them:
+Tool rejections contain "The user doesn't want to proceed...user said: [correction]". Use jq to extract from `toolUseResult` fields only:
 
 ```bash
-# Find tool rejections - look for "user said:" after rejection message
-grep -o "user said:[^\"]*" "$SESSION_FILE" 2>/dev/null | sed 's/user said:\\n//' | head -10
+# Extract tool rejection feedback from toolUseResult fields
+cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | if type == "string" then . else .stdout // empty end' 2>/dev/null | grep -o "user said:[^\"]*" | sed 's/user said:\\n//' | head -10
 ```
 
-Alternative with more context:
+**Alternative** - look for rejection context:
 ```bash
-grep "doesn't want to proceed" "$SESSION_FILE" | grep -o "user said:[^}]*" | head -10
+cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | strings | select(contains("doesn'"'"'t want to proceed"))' 2>/dev/null | grep -o "user said:.*" | head -10
 ```
 
 **2c. Extract user messages with correction patterns:**
 
-Use the same python/jq approach from Step 0.5b on the current session file.
+Use the same jq approach from Step 0.5b on the current session file. Remember to use `isMeta != true` to filter out command expansions:
+
+```bash
+cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -20
+```
 
 **2d. Also reflect on conversation context:**
 - Were there any corrections or patterns not explicitly queued?

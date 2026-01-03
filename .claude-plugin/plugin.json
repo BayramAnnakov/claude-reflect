@@ -1,6 +1,6 @@
 {
   "name": "claude-reflect",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Self-learning system for Claude Code that captures corrections and updates CLAUDE.md automatically",
   "author": {
     "name": "Bayram Annakov",
