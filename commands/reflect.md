@@ -97,7 +97,7 @@ Session files are JSONL. Use jq to extract user messages, then grep for patterns
 
 ```bash
 # For each session file, extract REAL user text (exclude command expansions)
-cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -20
+cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be|i prefer|always use|works better)" | head -20
 ```
 
 Replace `$SESSION_FILE` with actual file path from step 0.5a.
@@ -106,7 +106,7 @@ Replace `$SESSION_FILE` with actual file path from step 0.5a.
 ```bash
 for f in ~/.claude/projects/PROJECT_FOLDER/*.jsonl; do
   echo "=== $(basename $f) ==="
-  cat "$f" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -5
+  cat "$f" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be|i prefer|always use|works better)" | head -5
 done
 ```
 
@@ -218,7 +218,7 @@ cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | strings |
 Use the same jq approach from Step 0.5b on the current session file. Remember to use `isMeta != true` to filter out command expansions:
 
 ```bash
-cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be)" | head -20
+cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be|i prefer|always use|works better)" | head -20
 ```
 
 **2d. Also reflect on conversation context:**
