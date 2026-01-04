@@ -33,8 +33,13 @@ After installation, **restart Claude Code** (exit and reopen). Then hooks auto-c
 ### Prerequisites
 
 - [Claude Code](https://claude.ai/code) CLI installed
-- `jq` for JSON processing (`brew install jq` on macOS)
-- `python3` (included on most systems)
+- Python 3.6+ (included on most systems)
+
+### Platform Support
+
+- **macOS**: Fully supported
+- **Linux**: Fully supported
+- **Windows**: Fully supported (native Python, no WSL required)
 
 ## Commands
 
@@ -59,9 +64,9 @@ Hooks run automatically to detect and queue corrections:
 
 | Hook | Trigger | Purpose |
 |------|---------|---------|
-| `capture-learning.sh` | Every prompt | Detects correction patterns and queues them |
-| `check-learnings.sh` | Before compaction | Blocks compaction if queue has items |
-| `post-commit-reminder.sh` | After git commit | Reminds to run /reflect after completing work |
+| `capture_learning.py` | Every prompt | Detects correction patterns and queues them |
+| `check_learnings.py` | Before compaction | Backs up queue and informs user |
+| `post_commit_reminder.py` | After git commit | Reminds to run /reflect after completing work |
 
 **Stage 2: Process (Manual)**
 
@@ -136,11 +141,15 @@ claude-reflect/
 ├── hooks/
 │   └── hooks.json          # Auto-configured when plugin installed
 ├── scripts/
-│   ├── capture-learning.sh       # Hook: detect corrections
-│   ├── check-learnings.sh        # Hook: pre-compact check
-│   ├── post-commit-reminder.sh   # Hook: post-commit reminder
-│   ├── extract-session-learnings.sh
-│   └── extract-tool-rejections.sh
+│   ├── lib/
+│   │   └── reflect_utils.py      # Shared utilities
+│   ├── capture_learning.py       # Hook: detect corrections
+│   ├── check_learnings.py        # Hook: pre-compact check
+│   ├── post_commit_reminder.py   # Hook: post-commit reminder
+│   ├── extract_session_learnings.py
+│   ├── extract_tool_rejections.py
+│   └── legacy/                   # Bash scripts (deprecated)
+├── tests/                  # Test suite
 └── SKILL.md                # Skill context for Claude
 ```
 
