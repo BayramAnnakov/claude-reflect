@@ -72,24 +72,28 @@ Hooks run automatically to detect and queue corrections:
 
 Run `/reflect` to review and apply queued learnings to CLAUDE.md.
 
-### Pattern Detection
+### Detection Methods
 
-The capture hook detects corrections AND positive feedback:
+Claude-reflect uses a **hybrid detection approach**:
 
-**Corrections** (what went wrong):
-- `"no, use X"` / `"don't use Y"`
-- `"actually..."` / `"I meant..."`
-- `"use X not Y"` / `"that's wrong"`
+**1. Regex patterns (real-time capture)**
 
-**Positive patterns** (what works):
-- `"Perfect!"` / `"Exactly right"`
-- `"That's what I wanted"` / `"Great approach"`
-- `"Keep doing this"` / `"Nailed it"`
+Fast pattern matching during sessions detects:
 
-**Explicit markers**:
-- `"remember:"` — highest confidence
+- **Corrections**: `"no, use X"` / `"don't use Y"` / `"actually..."` / `"that's wrong"`
+- **Positive feedback**: `"Perfect!"` / `"Exactly right"` / `"Great approach"`
+- **Explicit markers**: `"remember:"` — highest confidence
 
-Each captured learning has a **confidence score** (0.60-0.95) based on pattern strength. Higher confidence = more likely to be a real learning.
+**2. Semantic AI validation (during /reflect)**
+
+When you run `/reflect`, an AI-powered semantic filter:
+- **Multi-language support** — understands corrections in any language
+- **Better accuracy** — filters out false positives from regex
+- **Cleaner learnings** — extracts concise, actionable statements
+
+Example: A Spanish correction like `"no, usa Python"` is correctly detected even though it doesn't match English patterns.
+
+Each captured learning has a **confidence score** (0.60-0.95). The final score is the higher of regex and semantic confidence.
 
 ### Human Review
 
@@ -142,10 +146,12 @@ claude-reflect/
 │   └── hooks.json          # Auto-configured when plugin installed
 ├── scripts/
 │   ├── lib/
-│   │   └── reflect_utils.py      # Shared utilities
+│   │   ├── reflect_utils.py      # Shared utilities
+│   │   └── semantic_detector.py  # AI-powered semantic analysis
 │   ├── capture_learning.py       # Hook: detect corrections
 │   ├── check_learnings.py        # Hook: pre-compact check
 │   ├── post_commit_reminder.py   # Hook: post-commit reminder
+│   ├── compare_detection.py      # Compare regex vs semantic detection
 │   ├── extract_session_learnings.py
 │   ├── extract_tool_rejections.py
 │   └── legacy/                   # Bash scripts (deprecated)

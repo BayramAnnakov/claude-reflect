@@ -298,9 +298,26 @@ When a user stops a tool and provides feedback, this is a strong correction sign
 - Check file modification time
 - Skip files older than N days
 
-**0.5d. LLM Filter (Inline):**
+**0.5d. Semantic Validation (Enhanced LLM Filter):**
 
-For each extracted correction, evaluate whether it's a REUSABLE learning.
+For each extracted correction, use semantic analysis to determine if it's a REUSABLE learning.
+
+**Preferred: Use semantic detector for accuracy:**
+```python
+# scripts/lib/semantic_detector.py
+from lib.semantic_detector import semantic_analyze
+
+result = semantic_analyze(message)
+# Returns: is_learning, type, confidence, reasoning, extracted_learning
+```
+
+Benefits of semantic analysis:
+- Works for ANY language (not just English patterns)
+- Provides cleaner `extracted_learning` for CLAUDE.md
+- More accurate confidence scores
+- Explains reasoning for each classification
+
+If semantic analysis is unavailable (timeout, CLI error), fall back to heuristic rules:
 
 **CRITICAL RULES:**
 1. **NEVER filter out `remember:` items** - these are explicit user requests, always present them
@@ -389,6 +406,66 @@ Then use AskUserQuestion to let user select which to keep.
 - **IMPORTANT**: Even if queue is empty, continue if `--scan-history` will add items
 - Only exit early if: queue is empty AND not doing history scan AND user declines manual capture
 
+### Step 1.5: Semantic Validation (Queue Items)
+
+After loading queue items, validate them using AI-powered semantic analysis. This provides:
+- **Multi-language support** — understands corrections in any language, not just English patterns
+- **Better accuracy** — filters out false positives from regex detection
+- **Cleaner learnings** — extracts concise, actionable statements for CLAUDE.md
+
+**1.5a. Run semantic analysis on each queue item:**
+
+Use the semantic detector (via `claude -p`) to analyze each queued message:
+
+```python
+# scripts/lib/semantic_detector.py provides:
+from lib.semantic_detector import validate_queue_items
+
+# For each item, semantic analysis returns:
+# {
+#   "is_learning": bool,           # Should this be kept?
+#   "type": "correction"|"positive"|"explicit"|null,
+#   "confidence": 0.0-1.0,         # AI's confidence score
+#   "reasoning": str,              # Why it was classified this way
+#   "extracted_learning": str      # Clean, actionable statement
+# }
+```
+
+**1.5b. Filter and enhance queue items:**
+
+For each queue item:
+1. Call semantic analysis on `item["message"]`
+2. If `is_learning == false` → remove from working list (not a reusable learning)
+3. If `is_learning == true`:
+   - Update confidence: `max(original_confidence, semantic_confidence)`
+   - Add `extracted_learning` for cleaner CLAUDE.md entries
+   - Add `semantic_type` to preserve classification
+
+**1.5c. Fallback behavior:**
+
+If semantic analysis fails (timeout, Claude CLI not available, API error):
+- **Keep the original item** with its regex-based classification
+- Log: "Semantic validation unavailable, using pattern-based detection"
+- Proceed normally with regex confidence scores
+
+**1.5d. Report filtering results:**
+
+Show what was filtered:
+```
+═══════════════════════════════════════════════════════════
+SEMANTIC VALIDATION — [N] items analyzed
+═══════════════════════════════════════════════════════════
+  ✓ [M] confirmed as learnings
+  ✗ [K] filtered (not reusable learnings)
+
+Filtered items (skipped):
+  - "Hello, how are you?" — [greeting, not a learning]
+  - "Can you help me?" — [question, not a learning]
+═══════════════════════════════════════════════════════════
+```
+
+**NOTE**: `remember:` items are ALWAYS kept regardless of semantic analysis — explicit user requests are never filtered.
+
 ### Step 2: Session Reflection (Enhanced with History Analysis)
 
 **Note**: This step is for analyzing the CURRENT session only (when NOT using `--scan-history`).
@@ -428,8 +505,17 @@ Search the current session file for user messages matching correction patterns. 
 - Model names, API patterns, tool usage mistakes, project conventions?
 - Implicit corrections (e.g., "Actually, the API returns...")
 
-**2e. LLM Filter (Inline):**
-If there are extracted corrections from 2b or 2c, evaluate each using the same criteria as Step 0.5d:
+**2e. Semantic Validation (LLM Filter):**
+
+If there are extracted corrections from 2b or 2c, use semantic analysis for accurate classification:
+
+```python
+from lib.semantic_detector import semantic_analyze
+result = semantic_analyze(message)
+# Use result["is_learning"], result["extracted_learning"], result["confidence"]
+```
+
+If semantic analysis is unavailable, fall back to heuristic evaluation:
 - REJECT questions, one-time tasks, context-specific items, vague feedback
 - ACCEPT tool recommendations, patterns, conventions, model corrections
 - Create actionable learnings in imperative form with scope suggestions

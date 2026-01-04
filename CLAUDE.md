@@ -29,12 +29,14 @@ tests/                      → Test suite (pytest)
 
 ### Key Files
 
-- `scripts/lib/reflect_utils.py`: Shared utilities (paths, queue ops, pattern detection)
+- `scripts/lib/reflect_utils.py`: Shared utilities (paths, queue ops, regex pattern detection)
+- `scripts/lib/semantic_detector.py`: AI-powered semantic analysis via `claude -p`
 - `scripts/capture_learning.py`: Pattern detection (correction, positive, explicit markers) with confidence scoring
 - `scripts/check_learnings.py`: PreCompact hook that backs up queue before context compaction
 - `scripts/extract_session_learnings.py`: Extracts user messages from session JSONL files
 - `scripts/extract_tool_rejections.py`: Extracts user corrections from tool rejections
-- `commands/reflect.md`: Main skill - 800+ line document defining the /reflect workflow
+- `scripts/compare_detection.py`: Compare regex vs semantic detection on session data
+- `commands/reflect.md`: Main skill - 850+ line document defining the /reflect workflow
 
 ## Development Commands
 
@@ -71,7 +73,9 @@ The plugin registers via `.claude-plugin/plugin.json`:
 
 Note: UserPromptSubmit hook for `capture_learning.py` is configured by the user per Claude Code plugin system.
 
-## Pattern Detection
+## Detection Methods
+
+### Regex Patterns (Real-time)
 
 `scripts/lib/reflect_utils.py` defines pattern detection:
 - **Corrections**: "no, use X", "don't use", "stop using", "that's wrong", "actually", "use X not Y"
@@ -79,6 +83,27 @@ Note: UserPromptSubmit hook for `capture_learning.py` is configured by the user 
 - **Explicit**: "remember:" prefix (highest confidence)
 
 Confidence scores range 0.60-0.90 based on pattern strength and count.
+
+### Semantic AI Validation (During /reflect)
+
+`scripts/lib/semantic_detector.py` provides AI-powered validation:
+- Uses `claude -p --output-format json` for semantic analysis
+- **Multi-language support** — works for any language, not just English
+- **Better accuracy** — filters out false positives from regex
+- **Cleaner learnings** — extracts concise, actionable statements
+
+Key functions:
+- `semantic_analyze(text)` — analyze single message
+- `validate_queue_items(items)` — batch validate queue items
+
+Fallback: If Claude CLI is unavailable, regex detection is used as fallback.
+
+### Comparison Testing
+
+`scripts/compare_detection.py` compares regex vs semantic detection:
+```bash
+python scripts/compare_detection.py --project .
+```
 
 ## Session File Format
 
