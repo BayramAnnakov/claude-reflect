@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/capture_learning.py\""
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "matcher": "",

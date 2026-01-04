@@ -68,10 +68,9 @@ The plugin registers via `.claude-plugin/plugin.json`:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
+| UserPromptSubmit | `capture_learning.py` | Detect corrections and queue them |
 | PreCompact | `check_learnings.py` | Backup queue before compaction |
 | PostToolUse (Bash) | `post_commit_reminder.py` | Remind to /reflect after commits |
-
-Note: UserPromptSubmit hook for `capture_learning.py` is configured by the user per Claude Code plugin system.
 
 ## Detection Methods
 
