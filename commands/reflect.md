@@ -218,9 +218,10 @@ If user chooses "Yes, scan history", proceed as if `--scan-history` was passed.
 - End with: "Dry run complete. Run /reflect without --dry-run to apply."
 
 **If user passed `--scan-history`:**
-- Skip the queue (Step 1) and current session analysis
-- Instead, scan ALL historical sessions for this project
-- Proceed to Step 0.5: Historical Scan
+- FIRST: Load the queue (Step 1) - queued items are NEVER skipped
+- THEN: Scan ALL historical sessions for this project (Step 0.5)
+- Combine queue items + history scan results into working list
+- Proceed to Step 3 (Project-Aware Filtering)
 
 ### Step 0.5: Historical Scan (only with --scan-history)
 
@@ -264,34 +265,36 @@ Session files are JSONL. Use jq to extract user messages, then grep for patterns
 Generate appropriate patterns for the detected language and combine with English patterns.
 
 **Default English patterns:**
+
+**IMPORTANT**: Claude Code's bash executor truncates complex commands. Use SIMPLE, single-file commands instead of for loops with complex jq piping.
+
 ```bash
-# For each session file, extract REAL user text (exclude command expansions)
-cat "$SESSION_FILE" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be|i prefer|always use|works better)" | head -20
+# For ONE file at a time (replace $FILE with actual path):
+cat $FILE | jq -r '.message.content[]?.text // empty' 2>/dev/null | grep -iE "remember:|no,? use|don't use|actually" | head -10
 ```
 
-Replace `$SESSION_FILE` with actual file path from step 0.5a.
-
-**Scan all files at once:**
-```bash
-for f in ~/.claude/projects/PROJECT_FOLDER/*.jsonl; do
-  echo "=== $(basename $f) ==="
-  cat "$f" | jq -r 'select(.type=="user" and .isMeta != true) | .message.content[]? | select(.type=="text") | .text' 2>/dev/null | grep -iE "(no,? use|don't use|actually|remember:|instead|please enable|should be|i prefer|always use|works better)" | head -5
-done
-```
+**Simpler approach - scan files individually:**
+1. List files: `ls ~/.claude/projects/PROJECT_FOLDER/*.jsonl`
+2. For each file, run the simple jq command above
+3. Do NOT use complex for loops - they fail in Claude Code's bash executor
 
 **0.5b-extra. Extract tool rejections (HIGH confidence):**
 
-Tool rejections are when user stopped a tool and gave feedback. Use jq to extract from `toolUseResult` fields only (avoids matching documentation text):
+Tool rejections are when user stopped a tool and gave feedback. The feedback appears after "user said:" but may be on the next line.
 
 ```bash
-# Extract tool rejection feedback from toolUseResult fields
-cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | if type == "string" then . else .stdout // empty end' 2>/dev/null | grep -o "user said:[^\"]*" | sed 's/user said:\\n//' | head -10
+# Extract tool rejection - look for the FULL rejection message
+cat $FILE | jq -r 'select(.toolUseResult) | .toolUseResult' 2>/dev/null | grep -A2 "user said:" | head -20
 ```
 
-**Alternative** - look for rejection context:
+**Note**: "user said:" followed by empty lines means the user rejected without providing feedback. Only process rejections that have actual text after "user said:".
+
+**Better approach** - extract the full rejection context:
 ```bash
-cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | strings | select(contains("doesn'"'"'t want to proceed"))' 2>/dev/null | grep -o "user said:.*" | head -10
+cat $FILE | jq -r 'select(.toolUseResult) | .toolUseResult' 2>/dev/null | grep -B2 -A2 "doesn't want to proceed"
 ```
+
+This shows the full context including what action was rejected and why.
 
 **0.5c. Apply date filter if `--days N` specified:**
 - Check file modification time
@@ -301,7 +304,10 @@ cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | strings |
 
 For each extracted correction, evaluate whether it's a REUSABLE learning.
 
-**IMPORTANT: When in doubt, INCLUDE the learning and let user decide.** Don't auto-reject borderline cases.
+**CRITICAL RULES:**
+1. **NEVER filter out `remember:` items** - these are explicit user requests, always present them
+2. **NEVER filter out queue items** - the user explicitly captured these via hooks
+3. **When in doubt, INCLUDE the learning and let user decide** - don't auto-reject borderline cases
 
 **REJECT ONLY if clearly:**
 - A question (ends with "?")
@@ -337,15 +343,23 @@ For each ACCEPTED correction, create:
 - For similar corrections, keep the most recent
 
 **0.5f. Build working list:**
+- ADD history scan results to working list (alongside any queue items from Step 1)
 - Use the actionable learning you created as the proposed entry
 - Use the scope suggestion (global/project) as default
 - Mark source as "history-scan" or "tool-rejection"
-- Continue to Step 3 (Project-Aware Filtering)
+
+**SANITY CHECK before proceeding:**
+- Verify queue items from Step 1 are still in working list
+- If queue had N items, working list must have at least N items
+- If working list is empty but queue was NOT empty → BUG, re-add queue items
+
+- Continue to Step 3 (Project-Aware Filtering) with COMBINED list (queue + history)
 
 ### Step 1: Load and Validate
-- Read the queue
-- If empty, ask if there are any learnings from this session to capture manually
-- If no learnings, exit
+- Read the queue from `~/.claude/learnings-queue.json`
+- Add all queue items to the working list (mark source as "queued")
+- **IMPORTANT**: Even if queue is empty, continue if `--scan-history` will add items
+- Only exit early if: queue is empty AND not doing history scan AND user declines manual capture
 
 ### Step 2: Session Reflection (Enhanced with History Analysis)
 
@@ -370,17 +384,21 @@ Agent files (`agent-*.jsonl`) are sub-conversations; focus on main session files
 
 **2b. Extract tool rejections (HIGH confidence corrections):**
 
-Tool rejections contain "The user doesn't want to proceed...user said: [correction]". Use jq to extract from `toolUseResult` fields only:
+Tool rejections contain "The user doesn't want to proceed...user said: [correction]". The feedback may appear on a separate line after "user said:".
 
 ```bash
-# Extract tool rejection feedback from toolUseResult fields
-cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | if type == "string" then . else .stdout // empty end' 2>/dev/null | grep -o "user said:[^\"]*" | sed 's/user said:\\n//' | head -10
+# Extract tool rejection - look for the FULL rejection message with context
+cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult' 2>/dev/null | grep -A2 "user said:" | head -20
 ```
 
-**Alternative** - look for rejection context:
+**Note**: "user said:" followed by empty lines means the user rejected without providing feedback - skip these.
+
+**Better approach** - extract the full rejection context:
 ```bash
-cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult | strings | select(contains("doesn'"'"'t want to proceed"))' 2>/dev/null | grep -o "user said:.*" | head -10
+cat "$SESSION_FILE" | jq -r 'select(.toolUseResult) | .toolUseResult' 2>/dev/null | grep -B2 -A2 "doesn't want to proceed"
 ```
+
+This shows the full context including what action was rejected and why.
 
 **2c. Extract user messages with correction patterns:**
 
