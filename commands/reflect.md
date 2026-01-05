@@ -10,6 +10,7 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion
 - `--targets`: Show detected AI assistant config files and exit.
 - `--review`: Show learnings with stale/decayed entries for review.
 - `--dedupe`: Scan CLAUDE.md for similar entries and propose consolidations.
+- `--include-tool-errors`: Include project-specific tool execution errors in scan (auto-enabled with `--scan-history`).
 
 ## Context
 - Project CLAUDE.md: @CLAUDE.md
@@ -398,7 +399,70 @@ Then use AskUserQuestion to let user select which to keep.
 - Tool rejections were found but not shown
 - You filtered items without user review
 
-- Continue to Step 3 (Project-Aware Filtering) with COMBINED list (queue + history)
+**0.5g. Extract Tool Execution Errors (Project-Specific Only):**
+
+Scan session files for REPEATED tool execution errors that reveal project-specific context.
+
+**What to extract:**
+Tool execution errors (`is_error: true`) that indicate project-specific issues:
+- Connection errors → Check .env for service URLs
+- Module not found → Project structure/import conventions
+- Environment undefined → Load .env file first
+- Service-specific errors (Supabase, Postgres, Redis) → Check config
+
+**What to EXCLUDE:**
+- Claude Code guardrails ("File has not been read yet", "exceeds max tokens")
+- Global Claude behavior (bash quoting, EISDIR directory confusion)
+- One-off errors (only include patterns with 2+ occurrences)
+
+**Use the extraction script:**
+```bash
+python scripts/extract_tool_errors.py --project "$(pwd)" --min-count 2 --json
+```
+
+Or use the utility functions directly:
+```python
+from lib.reflect_utils import extract_tool_errors, aggregate_tool_errors
+
+# Extract from session files
+errors = []
+for session_file in session_files:
+    errors.extend(extract_tool_errors(session_file, project_specific_only=True))
+
+# Aggregate by pattern (only keep 2+ occurrences)
+aggregated = aggregate_tool_errors(errors, min_occurrences=2)
+```
+
+**Semantic validation (optional):**
+```python
+from lib.semantic_detector import validate_tool_errors
+validated = validate_tool_errors(aggregated)
+```
+
+**Add validated error patterns to working list:**
+- Mark source as "tool-error"
+- Use `suggested_guideline` or `refined_guideline` as the proposed entry
+- Set scope to "project" (these are project-specific patterns)
+
+**Example output:**
+```
+═══════════════════════════════════════════════════════════
+TOOL ERROR PATTERNS — [N] project-specific issues found
+═══════════════════════════════════════════════════════════
+
+#1 [connection_refused] — 5 occurrences
+   Sample: "Connection refused to localhost:5432"
+   → Proposed: "Check DATABASE_URL in .env for PostgreSQL connection"
+
+#2 [env_undefined] — 3 occurrences
+   Sample: "SUPABASE_URL is not defined"
+   → Proposed: "Load .env file before accessing environment variables"
+═══════════════════════════════════════════════════════════
+```
+
+If tool error patterns are found, add them to the working list alongside user corrections.
+
+- Continue to Step 3 (Project-Aware Filtering) with COMBINED list (queue + history + tool-errors)
 
 ### Step 1: Load and Validate
 - Read the queue from `~/.claude/learnings-queue.json`

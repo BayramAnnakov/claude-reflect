@@ -233,6 +233,191 @@ def validate_queue_items(
     return validated
 
 
+# =============================================================================
+# Tool error validation
+# =============================================================================
+
+# Prompt for converting tool errors into CLAUDE.md guidelines
+ERROR_TO_GUIDELINE_PROMPT = """You are analyzing repeated tool execution errors to extract CLAUDE.md guidelines.
+
+Error type: {error_type}
+Sample error message: "{sample_error}"
+Occurrences: {count}
+Suggested guideline: "{suggested_guideline}"
+
+Analyze this error pattern and determine:
+1. Is this a project-specific issue that should go in CLAUDE.md?
+2. Should the guideline be refined or improved?
+
+Respond ONLY with valid JSON (no markdown, no explanation):
+{{
+  "is_learnable": true or false,
+  "refined_guideline": "improved actionable guideline or original if fine",
+  "confidence": 0.0 to 1.0,
+  "reasoning": "brief explanation"
+}}
+
+Guidelines for classification:
+- is_learnable=true: Error reveals project-specific context (env vars, paths, services)
+- is_learnable=false: Error is generic Claude behavior (bash syntax, file handling)
+- refined_guideline: Should mention specific services/paths if detected in error
+- confidence: Higher if clearly project-specific (0.7+)"""
+
+
+def validate_tool_error(
+    error_type: str,
+    sample_error: str,
+    count: int,
+    suggested_guideline: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    model: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Validate a tool error pattern and refine its guideline using Claude.
+
+    Args:
+        error_type: The categorized error type
+        sample_error: A sample error message
+        count: Number of times this error occurred
+        suggested_guideline: The initially suggested guideline
+        timeout: Timeout in seconds
+        model: Optional model override
+
+    Returns:
+        Dictionary with validation results, or None on failure:
+        {
+            "is_learnable": bool,
+            "refined_guideline": str,
+            "confidence": float,
+            "reasoning": str
+        }
+    """
+    prompt = ERROR_TO_GUIDELINE_PROMPT.format(
+        error_type=error_type,
+        sample_error=sample_error[:300].replace('"', '\\"'),
+        count=count,
+        suggested_guideline=suggested_guideline or "No suggestion"
+    )
+
+    # Build command
+    cmd = ["claude", "-p", "--output-format", "json"]
+    if model:
+        cmd.extend(["--model", model])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            return None
+
+        output = result.stdout.strip()
+        if not output:
+            return None
+
+        # Parse JSON response
+        try:
+            response = json.loads(output)
+            if isinstance(response, dict) and "result" in response:
+                content = response["result"]
+            else:
+                content = response
+        except json.JSONDecodeError:
+            content = _extract_json_from_text(output)
+            if content is None:
+                return None
+
+        # Validate response
+        if not isinstance(content, dict):
+            return None
+
+        is_learnable = content.get("is_learnable", False)
+        if isinstance(is_learnable, str):
+            is_learnable = is_learnable.lower() in ("true", "yes", "1")
+
+        try:
+            confidence = float(content.get("confidence", 0.7))
+            confidence = max(0.0, min(1.0, confidence))
+        except (TypeError, ValueError):
+            confidence = 0.7 if is_learnable else 0.3
+
+        return {
+            "is_learnable": is_learnable,
+            "refined_guideline": content.get("refined_guideline", suggested_guideline),
+            "confidence": confidence,
+            "reasoning": str(content.get("reasoning", "")),
+        }
+
+    except subprocess.TimeoutExpired:
+        return None
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def validate_tool_errors(
+    aggregated_errors: list,
+    timeout: int = DEFAULT_TIMEOUT,
+    model: Optional[str] = None
+) -> list:
+    """
+    Validate a list of aggregated tool errors using semantic analysis.
+
+    Args:
+        aggregated_errors: List from aggregate_tool_errors()
+        timeout: Timeout per item
+        model: Optional model override
+
+    Returns:
+        Filtered and enhanced list with refined guidelines
+    """
+    validated = []
+
+    for error in aggregated_errors:
+        error_type = error.get("error_type", "unknown")
+        sample_errors = error.get("sample_errors", [])
+        sample_error = sample_errors[0] if sample_errors else ""
+        count = error.get("count", 1)
+        suggested = error.get("suggested_guideline", "")
+
+        # Run semantic validation
+        result = validate_tool_error(
+            error_type=error_type,
+            sample_error=sample_error,
+            count=count,
+            suggested_guideline=suggested,
+            timeout=timeout,
+            model=model
+        )
+
+        if result is None:
+            # Fallback: keep original if semantic fails
+            validated.append(error)
+            continue
+
+        if not result.get("is_learnable"):
+            # Not a learnable pattern - skip
+            continue
+
+        # Enhance with semantic results
+        enhanced = {**error}
+        enhanced["refined_guideline"] = result.get("refined_guideline", suggested)
+        enhanced["semantic_confidence"] = result["confidence"]
+        enhanced["semantic_reasoning"] = result["reasoning"]
+        enhanced["confidence"] = max(error.get("confidence", 0.7), result["confidence"])
+
+        validated.append(enhanced)
+
+    return validated
+
+
 if __name__ == "__main__":
     # Simple test when run directly
     if len(sys.argv) > 1:
