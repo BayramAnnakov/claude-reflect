@@ -1,6 +1,6 @@
 ---
 description: Reflect on session corrections and update CLAUDE.md (with human review)
-allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion
+allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 ---
 
 ## Arguments
@@ -45,6 +45,60 @@ test -f AGENTS.md && echo "AGENTS.md"
 - Once applied to CLAUDE.md, entries are permanent (edit manually to remove)
 
 ## Your Task
+
+### MANDATORY: Initialize Task Tracking (Step 0)
+
+**BEFORE starting any work**, use TodoWrite to create a task list for the entire workflow. This ensures no steps are skipped and provides visibility into progress.
+
+**Why this is critical:**
+- The /reflect workflow has 10+ phases that must execute in order
+- Without tracking, Claude may skip steps or lose context
+- TodoWrite acts as a checkpoint system ensuring completeness
+
+**Initialize with this task list (adjust based on arguments):**
+
+```
+TodoWrite tasks for /reflect:
+1. "Parse arguments and check flags" (--dry-run, --scan-history, etc.)
+2. "Load learnings queue from ~/.claude/learnings-queue.json"
+3. "Scan historical sessions" (if --scan-history)
+4. "Validate learnings with semantic analysis"
+5. "Filter by project context (global vs project-specific)"
+6. "Deduplicate similar learnings"
+7. "Check for duplicates in existing CLAUDE.md"
+8. "Present summary and get user decision"
+9. "Apply changes to CLAUDE.md/AGENTS.md"
+10. "Clear queue and confirm completion"
+```
+
+**Workflow rules:**
+- **Mark in_progress BEFORE starting each step** - this signals what's happening
+- **Mark completed IMMEDIATELY after finishing** - don't batch updates
+- **Only ONE task should be in_progress at a time**
+- **Never skip a step** - if a step doesn't apply, mark it completed with a note
+- **If blocked or error occurs**, keep task as in_progress and create a new task for the blocker
+
+**Example TodoWrite call at start:**
+```json
+{
+  "todos": [
+    {"content": "Parse arguments (--scan-history detected)", "status": "in_progress", "activeForm": "Parsing command arguments"},
+    {"content": "Load learnings queue", "status": "pending", "activeForm": "Loading queue from ~/.claude/learnings-queue.json"},
+    {"content": "Scan historical sessions", "status": "pending", "activeForm": "Scanning past sessions for corrections"},
+    {"content": "Validate with semantic analysis", "status": "pending", "activeForm": "Validating learnings semantically"},
+    {"content": "Filter by project context", "status": "pending", "activeForm": "Filtering global vs project learnings"},
+    {"content": "Deduplicate similar learnings", "status": "pending", "activeForm": "Removing duplicate learnings"},
+    {"content": "Check existing CLAUDE.md for duplicates", "status": "pending", "activeForm": "Checking for existing entries"},
+    {"content": "Present summary to user", "status": "pending", "activeForm": "Presenting learnings summary"},
+    {"content": "Apply changes to target files", "status": "pending", "activeForm": "Writing to CLAUDE.md/AGENTS.md"},
+    {"content": "Clear queue and confirm", "status": "pending", "activeForm": "Finalizing and clearing queue"}
+  ]
+}
+```
+
+**DO NOT PROCEED** to the next section until you have initialized the task list with TodoWrite.
+
+---
 
 ### Handle --targets Argument
 
