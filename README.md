@@ -166,6 +166,7 @@ claude-reflect/
 │   └── plugin.json         # Plugin manifest (auto-registers hooks)
 ├── commands/
 │   ├── reflect.md          # Main command
+│   ├── reflect-skills.md   # Skill discovery
 │   ├── skip-reflect.md     # Discard queue
 │   └── view-queue.md       # View queue
 ├── hooks/
