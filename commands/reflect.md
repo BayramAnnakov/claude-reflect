@@ -20,24 +20,41 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 
 ## Multi-Target Export
 
-Claude-reflect syncs learnings to CLAUDE.md and AGENTS.md (the emerging cross-tool standard).
+Claude-reflect syncs learnings to CLAUDE.md files (including subdirectories), skill files, and AGENTS.md.
 
 **Supported Targets:**
 
 | Target | File Path | Format | Notes |
 |--------|-----------|--------|-------|
-| **Claude Code** | `~/.claude/CLAUDE.md`, `./CLAUDE.md` | Markdown | Always enabled |
+| **Global CLAUDE.md** | `~/.claude/CLAUDE.md` | Markdown | Always enabled |
+| **Project CLAUDE.md** | `./CLAUDE.md` | Markdown | If exists |
+| **Subdirectory CLAUDE.md** | `./**/CLAUDE.md` | Markdown | Auto-discovered |
+| **Skill Files** | `./commands/*.md` | Markdown | When correction relates to skill |
 | **AGENTS.md** | `./AGENTS.md` | Markdown | Industry standard (Codex, Cursor, Aider, Jules, Zed, Factory) |
 
-**Detection Logic:**
-```bash
-# Always enabled
-~/.claude/CLAUDE.md
-./CLAUDE.md (if exists)
+**Target Discovery:**
 
-# Only if file exists
-test -f AGENTS.md && echo "AGENTS.md"
+Use the Python utility to find all CLAUDE.md files:
+```python
+from scripts.lib.reflect_utils import find_claude_files
+files = find_claude_files()  # Returns list of {path, relative_path, type}
 ```
+
+Or discover manually:
+```bash
+# Find all CLAUDE.md files (excluding node_modules, .git, venv, etc.)
+find . -name "CLAUDE.md" -type f \
+  -not -path "*/node_modules/*" \
+  -not -path "*/.git/*" \
+  -not -path "*/venv/*" \
+  -not -path "*/.venv/*"
+```
+
+**Target Selection:**
+- Let users choose which CLAUDE.md file(s) to write to
+- Use AI reasoning to suggest appropriate file based on learning content
+- Global learnings (model names, general patterns) → `~/.claude/CLAUDE.md`
+- Project-specific learnings → `./CLAUDE.md` or subdirectory file
 
 **Note on Confidence & Decay:**
 - Confidence scores help prioritize learnings during `/reflect` review
@@ -674,6 +691,50 @@ Get current project path. For each queue item, compare `item.project` with curre
 - Specific tool/DB/service names → PROJECT-SPECIFIC
 - File paths → PROJECT-SPECIFIC
 
+### Step 3.3: Skill Context Detection (AI-Powered)
+
+For each learning, reason about whether it relates to an **active skill**.
+
+**IMPORTANT: Use reasoning, not pattern matching.**
+
+Read the session context around the correction. Think:
+- Was a skill/command (e.g., `/deploy`, `/commit`) invoked before this correction?
+- Does the correction relate to HOW that skill should work?
+- Would this correction be better as an improvement to the skill file itself?
+
+**Example reasoning:**
+```
+Learning: "always run tests before deploying"
+Session context: User ran /deploy, then corrected me
+
+My analysis: This correction happened right after /deploy was invoked.
+The user wants the deploy skill to include running tests.
+This should be offered as a skill improvement, not a CLAUDE.md entry.
+```
+
+**For each skill-related learning, add metadata:**
+```json
+{
+  "skill_context": {
+    "skill_name": "deploy",
+    "skill_file": "commands/deploy.md",
+    "reason": "Correction followed /deploy invocation"
+  }
+}
+```
+
+**Detection approach:**
+1. Look for `/command` patterns in recent session messages
+2. Reason about whether the correction relates to that command's workflow
+3. Check if `commands/[skill-name].md` exists in the project
+
+**If skill context detected:**
+- Mark the learning with skill metadata
+- In Step 5, offer routing options: skill file | CLAUDE.md | both
+
+**If NO skill context detected:**
+- Continue with normal CLAUDE.md routing
+
 ### Step 3.5: Semantic Deduplication (Within Queue)
 
 Before checking against CLAUDE.md, consolidate similar learnings within the current batch.
@@ -768,16 +829,60 @@ LEARNINGS SUMMARY — [N] items found
 ════════════════════════════════════════════════════════════
 
 ┌────┬─────────────────────────────────────────┬──────────┬────────┐
-│ #  │ Learning                                │ Scope    │ Status │
+│ #  │ Learning                                │ Target   │ Status │
 ├────┼─────────────────────────────────────────┼──────────┼────────┤
 │ 1  │ Use DB for persistent storage           │ project  │ ✓ new  │
 │ 2  │ Backoff on actual errors only           │ global   │ ✓ new  │
+│ 3  │ Run tests before deploying              │ /deploy  │ ⚡skill │
 │ ...│ ...                                     │ ...      │ ...    │
 └────┴─────────────────────────────────────────┴──────────┴────────┘
 
-Destinations: [N] → Global, [M] → Project
-Duplicates: [K] items will be merged with existing entries
+Destinations: [N] → Global, [M] → Project, [K] → Skills
+Duplicates: [L] items will be merged with existing entries
 ```
+
+**5a.1. Skill-Related Learnings (if any detected):**
+
+If any learnings have `skill_context` metadata from Step 3.3, show them separately:
+
+```
+════════════════════════════════════════════════════════════
+SKILL IMPROVEMENTS DETECTED
+════════════════════════════════════════════════════════════
+
+These learnings appear related to specific skills:
+
+#3: "Run tests before deploying"
+   → Relates to: /deploy (commands/deploy.md)
+   → Reason: Correction followed /deploy invocation
+
+#7: "Include file count in commit message"
+   → Relates to: /commit (commands/commit.md)
+   → Reason: Correction during commit workflow
+
+════════════════════════════════════════════════════════════
+```
+
+**5a.2. Skill Routing Question:**
+
+For each skill-related learning, use AskUserQuestion:
+```json
+{
+  "questions": [{
+    "question": "Learning #3 relates to /deploy. Where should it go?",
+    "header": "Route",
+    "multiSelect": false,
+    "options": [
+      {"label": "Skill file (Recommended)", "description": "Add to commands/deploy.md to improve the skill"},
+      {"label": "CLAUDE.md", "description": "Add to project CLAUDE.md as general guidance"},
+      {"label": "Both", "description": "Add to skill file AND CLAUDE.md"},
+      {"label": "Skip", "description": "Don't add this learning anywhere"}
+    ]
+  }]
+}
+```
+
+Track routing decisions for Step 7.
 
 **5b. Use AskUserQuestion for strategy:**
 
@@ -894,6 +999,10 @@ Global CLAUDE.md (~/.claude/CLAUDE.md):
   Line [N]: REPLACE "[old]" → "[new]"
   After line [N]: ADD "[new entry]"
 
+Skill Files:
+  commands/deploy.md: ADD "Run tests before build step"
+  commands/commit.md: ADD "Include file count in message"
+
 Skipped: [N] learnings (including [M] from other projects)
 ════════════════════════════════════════════════════════════
 ```
@@ -902,11 +1011,11 @@ Skipped: [N] learnings (including [M] from other projects)
 ```json
 {
   "questions": [{
-    "question": "Apply [N] learnings to CLAUDE.md files?",
+    "question": "Apply [N] learnings to target files?",
     "header": "Confirm",
     "multiSelect": false,
     "options": [
-      {"label": "Yes, apply all", "description": "[X] to Global, [Y] to Project CLAUDE.md"},
+      {"label": "Yes, apply all", "description": "[X] to Global, [Y] to Project, [Z] to Skills"},
       {"label": "Go back", "description": "Return to selection to adjust"},
       {"label": "Cancel", "description": "Don't apply anything, keep queue"}
     ]
@@ -928,7 +1037,36 @@ Only after final confirmation:
 2. Use Edit tool with precise old_string from detected line numbers
 3. For new entries, add after the relevant section header
 
-**7b. Apply to AGENTS.md (if exists):**
+**7b. Apply to Skill Files (if any routed to skills):**
+
+For learnings routed to skill files in Step 5a.2:
+
+1. Read the skill file (e.g., `commands/deploy.md`)
+2. Reason about WHERE the learning fits in the skill:
+   - Is it a new step in the workflow? → Add to steps section
+   - Is it a guardrail/constraint? → Add to guardrails section
+   - Is it context/setup? → Add to context section
+3. Use Edit tool to insert the learning appropriately
+
+**Example skill file update:**
+```markdown
+## Steps
+
+1. Run tests                    ← NEW (added from learning)
+2. Build the project
+3. Push to production
+4. Notify Slack
+
+## Guardrails
+- Always verify tests pass before proceeding  ← Could also go here
+```
+
+**Important:**
+- Preserve the skill's existing structure
+- Add learnings where they make semantic sense
+- Use your reasoning to determine placement (not hardcoded rules)
+
+**7c. Apply to AGENTS.md (if exists):**
 
 Check if AGENTS.md exists:
 ```bash
@@ -972,6 +1110,8 @@ DONE: Applied [N] learnings
   ✓ ~/.claude/CLAUDE.md    [N] entries
   ✓ ./CLAUDE.md            [N] entries
   ✓ AGENTS.md              [N] entries (if exists)
+  ⚡ commands/deploy.md     [N] skill improvements
+  ⚡ commands/commit.md     [N] skill improvements
 
   Skipped: [N]
 ════════════════════════════════════════════════════════════

@@ -29,6 +29,97 @@ def get_claude_dir() -> Path:
     return Path.home() / ".claude"
 
 
+# Directories to exclude when searching for CLAUDE.md files
+EXCLUDED_DIRS = {
+    'node_modules', '.git', '.svn', '.hg', 'venv', '.venv', 'env', '.env',
+    '__pycache__', '.pytest_cache', '.mypy_cache', 'dist', 'build',
+    '.next', '.nuxt', 'coverage', '.coverage', 'htmlcov',
+    'vendor', 'target', 'out', 'bin', 'obj',
+}
+
+
+def find_claude_files(root_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Find all CLAUDE.md files in the project tree.
+
+    Args:
+        root_dir: Root directory to search from (defaults to cwd)
+
+    Returns:
+        List of dicts with {path, relative_path, type} for each CLAUDE.md found.
+        Type is 'root', 'subdirectory', or 'global'.
+    """
+    root = Path(root_dir) if root_dir else Path.cwd()
+    results = []
+
+    # Always include global CLAUDE.md
+    global_claude = get_claude_dir() / "CLAUDE.md"
+    if global_claude.exists():
+        results.append({
+            "path": str(global_claude),
+            "relative_path": "~/.claude/CLAUDE.md",
+            "type": "global",
+        })
+
+    # Check root CLAUDE.md
+    root_claude = root / "CLAUDE.md"
+    if root_claude.exists():
+        results.append({
+            "path": str(root_claude),
+            "relative_path": "./CLAUDE.md",
+            "type": "root",
+        })
+
+    # Search for CLAUDE.md in subdirectories
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Skip excluded directories
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+
+        # Skip root (already handled)
+        if Path(dirpath) == root:
+            continue
+
+        if "CLAUDE.md" in filenames:
+            full_path = Path(dirpath) / "CLAUDE.md"
+            rel_path = full_path.relative_to(root)
+            results.append({
+                "path": str(full_path),
+                "relative_path": f"./{rel_path}",
+                "type": "subdirectory",
+            })
+
+    return results
+
+
+def suggest_claude_file(learning: str, claude_files: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Suggest which CLAUDE.md file a learning should go to.
+
+    This is a hint for Claude to use when reasoning about placement.
+    Returns the relative_path of the suggested file, or None to let Claude decide.
+
+    Note: This is intentionally simple - Claude should use its reasoning
+    to make the final decision, not rely on this heuristic.
+    """
+    learning_lower = learning.lower()
+
+    # Global indicators (model names, general patterns)
+    global_indicators = ['gpt-', 'claude-', 'always ', 'never ', 'prefer ']
+    if any(ind in learning_lower for ind in global_indicators):
+        return "~/.claude/CLAUDE.md"
+
+    # Check if learning mentions a specific directory
+    for cf in claude_files:
+        if cf["type"] == "subdirectory":
+            # Extract directory name from path
+            dir_name = Path(cf["relative_path"]).parent.name.lower()
+            if dir_name in learning_lower:
+                return cf["relative_path"]
+
+    # Default: let Claude decide (return None)
+    return None
+
+
 # =============================================================================
 # Queue operations
 # =============================================================================

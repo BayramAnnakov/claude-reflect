@@ -16,7 +16,7 @@ hooks/hooks.json            → Hook definitions (PreCompact, PostToolUse)
 scripts/                    → Python scripts for hooks and extraction
 scripts/lib/                → Shared utilities (reflect_utils.py)
 scripts/legacy/             → Deprecated bash scripts (for reference)
-commands/*.md               → Skill definitions for /reflect, /skip-reflect, /view-queue
+commands/*.md               → Skill definitions for /reflect, /reflect-skills, /skip-reflect, /view-queue
 SKILL.md                    → Context provided when plugin is invoked
 tests/                      → Test suite (pytest)
 ```
@@ -37,6 +37,7 @@ tests/                      → Test suite (pytest)
 - `scripts/extract_tool_rejections.py`: Extracts user corrections from tool rejections
 - `scripts/compare_detection.py`: Compare regex vs semantic detection on session data
 - `commands/reflect.md`: Main skill - 850+ line document defining the /reflect workflow
+- `commands/reflect-skills.md`: Skill discovery - AI-powered pattern detection from sessions
 
 ## Development Commands
 
@@ -124,6 +125,48 @@ Session files are JSONL at `~/.claude/projects/[PROJECT_FOLDER]/`:
   "sentiment": "correction|positive",
   "decay_days": 90
 }
+```
+
+## Skill Discovery (/reflect-skills)
+
+Analyzes session history to discover repeating patterns that could become skills.
+
+**Design Principles:**
+- **AI-powered** — Claude uses reasoning to identify patterns, not regex
+- **Semantic similarity** — detects same intent across different phrasings
+- **Human-in-the-loop** — user approves before skill generation
+
+**Usage:**
+```bash
+/reflect-skills              # Analyze last 14 days
+/reflect-skills --days 30    # Analyze last 30 days
+/reflect-skills --dry-run    # Preview without generating files
+```
+
+**What it detects:**
+- Workflow patterns (repeated multi-step sequences)
+- Misunderstanding patterns (corrections that could become guardrails)
+- Intent similarity (same goal, different wording)
+
+## Skill Improvement Routing
+
+When running `/reflect`, corrections made during skill execution can be routed back to the skill file itself.
+
+**How it works:**
+1. `/reflect` detects when a correction followed a skill invocation (e.g., `/deploy`)
+2. Claude reasons about whether the correction relates to the skill's workflow
+3. User is offered routing options: skill file | CLAUDE.md | both
+4. Skill file is updated in the appropriate section (steps, guardrails, etc.)
+
+**Example:**
+```
+User: /deploy
+Claude: [deploys without running tests]
+User: "no, always run tests before deploying"
+
+→ /reflect detects this relates to /deploy
+→ Offers to add "Run tests before deploying" to commands/deploy.md
+→ Skill file updated with new step in workflow
 ```
 
 ## Platform Support

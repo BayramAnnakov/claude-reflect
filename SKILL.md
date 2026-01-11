@@ -22,6 +22,7 @@ User runs `/reflect` to review and apply queued learnings to CLAUDE.md files.
 | `/reflect` | Process queued learnings with human review |
 | `/reflect --scan-history` | Scan past sessions for missed learnings |
 | `/reflect --dry-run` | Preview changes without applying |
+| `/reflect-skills` | Discover skill candidates from repeating patterns |
 | `/skip-reflect` | Discard all queued learnings |
 | `/view-queue` | View pending learnings without processing |
 
@@ -42,10 +43,11 @@ High-confidence corrections:
 - "use X not Y" / "X instead of Y"
 - "remember:" (explicit marker)
 
-## CLAUDE.md Destinations
+## Learning Destinations
 
 - `~/.claude/CLAUDE.md` - Global learnings (model names, general patterns)
 - `./CLAUDE.md` - Project-specific learnings (conventions, tools, structure)
+- `commands/*.md` - Skill improvements (corrections during skill execution)
 
 ## Example Interaction
 
