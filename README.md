@@ -3,7 +3,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/BayramAnnakov/claude-reflect?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/stargazers)
 [![Version](https://img.shields.io/badge/version-2.6.0-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
+[![Tests](https://img.shields.io/badge/tests-220%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect#platform-support)
 
 A self-learning system for Claude Code that captures corrections and discovers workflow patterns — turning them into permanent memory and reusable skills.
@@ -44,6 +44,9 @@ Example: You've asked "review my productivity" 12 times → suggests creating `/
 | **Skill Discovery** | Finds repeating patterns in your history → generates commands |
 | **Multi-language** | AI understands corrections in any language |
 | **Skill Improvement** | Corrections during `/deploy` improve the deploy skill itself |
+| **Session Logging** | Auto-captures session activity at end → local file + optional webhook |
+| **Context Loss Analysis** | Scans history for "you forgot" patterns → generates `CONTEXT_LOSS_ANALYSIS.md` |
+| **Workflow Extraction** | Finds recurring command sequences → generates `WORKFLOWS.md` |
 
 ## Installation
 
@@ -82,6 +85,8 @@ After installation, **restart Claude Code** (exit and reopen). Then hooks auto-c
 | `/reflect --targets` | Show detected config files (CLAUDE.md, AGENTS.md) |
 | `/reflect --review` | Show queue with confidence scores and decay status |
 | `/reflect --dedupe` | Find and consolidate similar entries in CLAUDE.md |
+| `/reflect --context-loss` | Scan sessions for "you forgot" patterns → `docs/CONTEXT_LOSS_ANALYSIS.md` |
+| `/reflect --workflows` | Extract recurring procedures → `docs/WORKFLOWS.md` |
 | `/reflect --include-tool-errors` | Include tool execution errors in scan |
 | `/reflect-skills` | Discover skill candidates from repeating patterns |
 | `/reflect-skills --days N` | Analyze last N days (default: 14) |
@@ -107,6 +112,7 @@ Hooks run automatically to detect and queue corrections:
 | `capture_learning.py` | Every prompt | Detects correction patterns and queues them |
 | `check_learnings.py` | Before compaction | Backs up queue and informs user |
 | `post_commit_reminder.py` | After git commit | Reminds to run /reflect after completing work |
+| `session_end_log.py` | Session end | Captures activity summary → local file or webhook |
 
 **Stage 2: Process (Manual)**
 

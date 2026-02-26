@@ -5,6 +5,26 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`SessionEnd` hook** — New `session_end_log.py` hook that fires at session end to
+  capture a structured activity summary (topics covered, tools used, corrections detected).
+  - Writes to `~/.claude/session-logs/YYYY-MM-DD-HHMMSS.md` by default
+  - Optional webhook: set `CLAUDE_REFLECT_SESSION_LOG_WEBHOOK=<url>` to POST JSON payload
+  - Optional command: set `CLAUDE_REFLECT_SESSION_LOG_COMMAND=<cmd>` to pipe JSON to a custom script
+  - Disable entirely: set `CLAUDE_REFLECT_SESSION_LOG=false`
+  - Skips very short sessions (< 4 messages) to avoid noise
+- **`/reflect --context-loss`** — Scans past sessions for patterns where the user had to
+  remind Claude of forgotten knowledge ("you forgot", "I told you", "read the rules").
+  Generates `docs/CONTEXT_LOSS_ANALYSIS.md` with categorized patterns and suggests a
+  SESSION RECOVERY section for `AGENTS.md` to prevent recurring context loss.
+- **`/reflect --workflows`** — Scans past sessions for recurring command sequences and
+  operational procedures. Generates `docs/WORKFLOWS.md` with copy-paste ready steps
+  grouped by category (build, deploy, test, etc.). Only includes patterns seen 3+ times.
+- **23 new tests** in `tests/test_session_end_log.py` covering parse_session, derive_topics,
+  format_markdown, format_json, write_local, and _extract_texts.
+
 ## [3.0.1] - 2026-02-12
 
 ### Added

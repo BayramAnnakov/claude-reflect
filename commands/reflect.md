@@ -13,6 +13,8 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 - `--organize`: Analyze memory hierarchy and suggest reorganization across tiers.
 - `--include-tool-errors`: Include project-specific tool execution errors in scan (auto-enabled with `--scan-history`).
 - `--model MODEL`: Model for semantic analysis (default: `sonnet`). Use `haiku` for faster/cheaper runs or `opus` for maximum accuracy.
+- `--context-loss`: Scan past sessions for "you forgot / I told you / read the rules" patterns → generate `docs/CONTEXT_LOSS_ANALYSIS.md` and suggest a SESSION RECOVERY section for `AGENTS.md`.
+- `--workflows`: Extract recurring command sequences from past sessions → generate `docs/WORKFLOWS.md` with copy-paste ready procedures.
 
 ## Context
 - Project CLAUDE.md: @CLAUDE.md
@@ -443,6 +445,192 @@ Use AskUserQuestion for each proposed reorganization:
 - Preserve section structure in all files
 
 **6. Exit after reorganization (don't process queue).**
+
+### Handle --context-loss Argument
+
+**If user passed `--context-loss`:**
+
+Scan past sessions for patterns where the user had to remind Claude of something it forgot,
+then generate a `docs/CONTEXT_LOSS_ANALYSIS.md` report and suggest a SESSION RECOVERY section
+for `AGENTS.md`.
+
+**1. Find session files (same method as `--scan-history` Step 0.5a).**
+
+**2. Search for "forgotten knowledge" signals:**
+
+```bash
+# English patterns
+grep -h -o '"content":"[^"]*\(you forgot\|forgot how\|read the rules\|check docs\|you used to\|we already\|I told you\|I already told\|I said\|remember to\)[^"]*"' SESSION_FILES 2>/dev/null | head -50
+
+# Additional language patterns (adapt based on detected conversation language)
+# Spanish: "ya te dije\|te olvidaste\|lee las reglas"
+# German: "du hast vergessen\|ich habe dir gesagt\|lies die regeln"
+# Russian: "ты забыл\|я уже говорил\|прочитай правила"
+```
+
+**IMPORTANT**: Also detect when user says things like "no, use X" or "wrong, use Y" repeatedly across sessions for the same topic — these indicate recurring forgotten patterns, not just one-off corrections.
+
+**3. Categorize patterns:**
+
+| Category | Example signal | Fix type |
+|----------|---------------|----------|
+| **Build environment** | "compile on X not Y" | AGENTS.md quick command |
+| **Architecture** | "app is now native not web" | AGENTS.md architecture section |
+| **Tool location** | "use the script in scripts/, not the global one" | AGENTS.md paths table |
+| **Workflow** | "always run X before Y" | AGENTS.md quick commands |
+| **Project identity** | "we're on v2, not v1" | AGENTS.md project identity |
+| **Recurring correction** | Same "no, use X" pattern in 3+ sessions | Rules file candidate |
+
+**4. Generate `docs/CONTEXT_LOSS_ANALYSIS.md`:**
+
+```markdown
+# Context Loss Analysis
+
+Generated: YYYY-MM-DD | Sessions analyzed: N
+
+## Summary
+
+Found M patterns across N sessions where knowledge was repeatedly lost.
+
+## Patterns
+
+### 1. [Category: Build Environment]
+
+**User reminders found (N occurrences):**
+- "[exact quote]" — session abc123
+- "[exact quote]" — session def456
+
+**Root cause:** This information is not documented in AGENTS.md.
+
+**Recommended fix:** Add to AGENTS.md Quick Commands section.
+
+---
+
+### 2. [Category: ...]
+...
+
+## Recommendations
+
+| Priority | Fix | Where |
+|----------|-----|-------|
+| High | Add build target table | AGENTS.md → SESSION RECOVERY |
+| Medium | Document architecture state | AGENTS.md → Architecture section |
+```
+
+**5. Propose SESSION RECOVERY section for AGENTS.md:**
+
+Use AskUserQuestion to ask if they want to add a SESSION RECOVERY section to AGENTS.md:
+
+```markdown
+## SESSION RECOVERY (Read after compact/clear)
+
+### Critical Facts
+
+| Item | Value |
+|------|-------|
+| [Key 1] | [Value extracted from patterns] |
+| [Key 2] | [Value extracted from patterns] |
+
+### Quick Commands
+
+\`\`\`bash
+# [Task extracted from patterns]
+[command]
+\`\`\`
+```
+
+If user approves, prepend it near the top of AGENTS.md (or update existing section).
+
+**6. Exit after context loss analysis (don't process queue).**
+
+---
+
+### Handle --workflows Argument
+
+**If user passed `--workflows`:**
+
+Scan past sessions for recurring command sequences and operational procedures, then generate
+`docs/WORKFLOWS.md` with copy-paste ready instructions.
+
+**1. Find session files (same method as `--scan-history` Step 0.5a).**
+
+**2. Extract command patterns:**
+
+Search for tool calls, command sequences, and "how to do X" discussions:
+
+```bash
+# Find assistant messages with multiple bash commands in sequence
+grep -h '"type":"tool_use"' SESSION_FILES | grep '"name":"Bash"' | head -100
+
+# Find user messages asking for procedures
+grep -h -o '"content":"[^"]*\(how to\|how do I\|steps to\|procedure\|workflow\)[^"]*"' SESSION_FILES | head -50
+```
+
+**3. Identify workflow categories by frequency:**
+
+Group extracted commands by purpose. Common categories to look for:
+- File transfer (rsync, scp, cp)
+- Build processes (make, npm, cargo, go build)
+- Deployment (deploy, push, restart)
+- Testing (test, pytest, jest, cargo test)
+- Debugging (logs, status checks, diagnostics)
+- Database operations (migrate, seed, query)
+- Git operations (common multi-step sequences)
+
+Only include categories that appear **3 or more times** across sessions.
+
+**4. Generate `docs/WORKFLOWS.md`:**
+
+```markdown
+# Operational Workflows
+
+> Auto-generated by /reflect --workflows from session history.
+> Update manually as procedures evolve.
+
+## Index
+1. [Workflow A]
+2. [Workflow B]
+
+---
+
+## [Workflow Name]
+
+**Frequency:** Used N times across M sessions.
+
+### Prerequisites
+- [requirement]
+
+### Steps
+
+\`\`\`bash
+# Step 1: [Description]
+[exact command from session history]
+
+# Step 2: [Description]
+[exact command from session history]
+\`\`\`
+
+### Notes
+- [Any caveats or gotchas observed in sessions]
+
+### Troubleshooting
+- **Problem:** [X] → **Solution:** [Y]
+```
+
+**5. Show summary and ask user to review before writing:**
+
+```
+Found N workflow categories (M total procedures):
+  - Build & Deploy: 12 occurrences
+  - Database: 7 occurrences
+  - Testing: 5 occurrences
+
+Write docs/WORKFLOWS.md? (Y/n)
+```
+
+**6. Exit after workflow extraction (don't process queue).**
+
+---
 
 ### First-Run Detection (Per-Project)
 
