@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **23 new tests** in `tests/test_session_end_log.py` covering parse_session, derive_topics,
   format_markdown, format_json, write_local, and _extract_texts.
 
+### Fixed
+- **`CLAUDE_PLUGIN_ROOT` fallback in `hooks/hooks.json`** — All 5 hooks now use shell parameter
+  expansion `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-reflect-marketplace/claude-reflect}`
+  so hooks degrade gracefully instead of failing with a broken path when Claude Code does not
+  expand the variable (fixes #17).
+
 ## [3.0.1] - 2026-02-12
 
 ### Added
