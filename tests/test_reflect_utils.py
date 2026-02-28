@@ -316,6 +316,177 @@ class TestPatternDetection(unittest.TestCase):
             self.assertLessEqual(confidence, 0.65)
 
 
+class TestCJKPatternDetection(unittest.TestCase):
+    """Tests for CJK (Chinese, Japanese, Korean) pattern detection."""
+
+    # --- Short message rejection ---
+
+    def test_short_message_rejected(self):
+        """Test that very short messages are rejected as non-actionable."""
+        result = detect_patterns("OK")
+        self.assertIsNone(result[0])
+
+    def test_short_cjk_message_rejected(self):
+        """Test that very short CJK messages (<=2 chars) are rejected."""
+        result = detect_patterns("好")
+        self.assertIsNone(result[0])
+
+        result = detect_patterns("うん")
+        self.assertIsNone(result[0])
+
+    def test_short_cjk_correction_not_rejected(self):
+        """Test that short but meaningful CJK corrections are NOT rejected."""
+        result = detect_patterns("やめて")
+        self.assertEqual(result[0], "auto")
+
+    # --- Full-width question mark ---
+
+    def test_fullwidth_question_mark_rejected(self):
+        """Test that full-width question marks are treated as questions."""
+        result = detect_patterns("何ですか？")
+        self.assertIsNone(result[0])
+
+        result = detect_patterns("這是什麼？")
+        self.assertIsNone(result[0])
+
+    # --- CJK question particles ---
+
+    def test_cjk_question_particle_ja(self):
+        """Test Japanese question particle か."""
+        result = detect_patterns("何ですか")
+        self.assertIsNone(result[0])
+
+    def test_cjk_question_particle_zh(self):
+        """Test Chinese question particles 嗎/呢."""
+        result = detect_patterns("這是什麼嗎")
+        self.assertIsNone(result[0])
+
+        result = detect_patterns("你在做什麼呢")
+        self.assertIsNone(result[0])
+
+    def test_cjk_question_particle_ko(self):
+        """Test Korean question particle 까."""
+        result = detect_patterns("이것은 뭐입니까")
+        self.assertIsNone(result[0])
+
+    # --- Non-correction English phrases ---
+
+    def test_no_problem_not_correction(self):
+        """Test 'No problem' in mixed CJK-English text is not a correction."""
+        result = detect_patterns("No problem, 次に進もう")
+        self.assertIsNone(result[0])
+
+    def test_dont_worry_not_correction(self):
+        """Test 'don't worry' in mixed text is not a correction."""
+        result = detect_patterns("don't worry、大丈夫")
+        self.assertIsNone(result[0])
+
+    def test_no_worries_not_correction(self):
+        """Test 'No worries' is not a correction."""
+        result = detect_patterns("No worries, それでOK")
+        self.assertIsNone(result[0])
+
+    def test_never_mind_not_correction(self):
+        """Test 'Never mind' is not a correction."""
+        result = detect_patterns("Never mind、別の方法でやろう")
+        self.assertIsNone(result[0])
+
+    # --- Japanese correction patterns ---
+
+    def test_ja_iya_correction(self):
+        """Test Japanese いや、(no,) correction pattern."""
+        result = detect_patterns("いや、そっちじゃなくてこっちを修正して")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("iya", result[1])
+
+    def test_ja_chigau_correction(self):
+        """Test Japanese 違う、(wrong,) correction pattern."""
+        result = detect_patterns("違う、useStateじゃなくてuseRefを使って")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("chigau", result[1])
+
+    def test_ja_machigatteru_correction(self):
+        """Test Japanese 間違ってる (it's wrong) correction pattern."""
+        result = detect_patterns("それ間違ってる、型が違う")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("machigatte", result[1])
+
+    def test_ja_souja_nakute_correction(self):
+        """Test Japanese そうじゃなくて (not that) correction pattern."""
+        result = detect_patterns("そうじゃなくて別のファイルを見て")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("souja-nakute", result[1])
+
+    def test_ja_janakute_nishite_correction(self):
+        """Test Japanese じゃなくて〜にして (use X not Y) correction pattern."""
+        result = detect_patterns("mapじゃなくてforEachにして")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("janakute-nishite", result[1])
+
+    def test_ja_souja_nai_correction(self):
+        """Test Japanese そうじゃない (that's not right) correction pattern."""
+        result = detect_patterns("そうじゃない、もう一度考えて")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("souja-nai", result[1])
+
+    def test_ja_tte_itta_correction(self):
+        """Test Japanese って言ったのに (I told you) correction pattern."""
+        result = detect_patterns("TypeScriptにしてって言ったのに")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("tte-itta", result[1])
+
+    # --- Chinese correction patterns ---
+
+    def test_zh_bushi_correction(self):
+        """Test Chinese 不是 (no) correction pattern."""
+        result = detect_patterns("不是，应该用另一个方法")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("bushi", result[1])
+
+    def test_zh_cuole_correction(self):
+        """Test Chinese 错了 (wrong) correction pattern."""
+        result = detect_patterns("错了，这个逻辑有问题")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("cuole", result[1])
+
+    # --- Korean correction patterns ---
+
+    def test_ko_ani_correction(self):
+        """Test Korean 아니 (no) correction pattern."""
+        result = detect_patterns("아니, 그게 아니라 이거를 수정해")
+        self.assertEqual(result[0], "auto")
+        self.assertIn("ani", result[1])
+
+    # --- English patterns still work ---
+
+    def test_english_patterns_unchanged(self):
+        """Ensure existing English patterns are not broken."""
+        # Corrections
+        result = detect_patterns("No, use TypeScript not JavaScript")
+        self.assertEqual(result[0], "auto")
+
+        result = detect_patterns("actually, use the other method")
+        self.assertEqual(result[0], "auto")
+
+        result = detect_patterns("I told you to use npm")
+        self.assertEqual(result[0], "auto")
+
+        # Non-corrections
+        result = detect_patterns("how do I install this?")
+        self.assertIsNone(result[0])
+
+        result = detect_patterns("please fix this bug")
+        self.assertIsNone(result[0])
+
+        # Explicit
+        result = detect_patterns("remember: always use bun")
+        self.assertEqual(result[0], "explicit")
+
+        # Guardrail
+        result = detect_patterns("don't add comments unless I ask")
+        self.assertEqual(result[0], "guardrail")
+
+
 class TestQueueItemCreation(unittest.TestCase):
     """Tests for queue item creation."""
 

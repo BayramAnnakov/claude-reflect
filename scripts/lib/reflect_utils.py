@@ -485,13 +485,49 @@ GUARDRAIL_PATTERNS = [
 # Structural patterns indicating FALSE POSITIVES (language-agnostic)
 # These focus on MESSAGE STRUCTURE rather than specific words
 FALSE_POSITIVE_PATTERNS = [
-    r"\?$",  # Ends with question mark → question, not correction
+    r"[?\uff1f]$",  # Ends with question mark (ASCII ? or full-width ？)
+    r"[\u55ce\u5417\u5462\u304b\uae4c]$",  # Ends with CJK question particle (嗎吗呢か까)
     r"^(please|can you|could you|would you|help me)\b",  # Task request openers
     r"(help|fix|check|review|figure out|set up)\s+(this|that|it|the)\b",  # Task verbs
     r"(error|failed|could not|cannot|can't|unable to)\s+\w+",  # Error descriptions
     r"(is|was|are|were)\s+(not|broken|failing)",  # Bug reports
     r"^I (need|want|would like)\b",  # Task requests
     r"^(ok|okay|alright)[,.]?\s+(so|now|let)",  # Task continuations
+]
+
+# English phrases that look like correction openers but are NOT corrections
+# Especially important for CJK-mixed text where these appear naturally
+NON_CORRECTION_PHRASES = [
+    r"^no\s+problem",        # "No problem" - agreement
+    r"^no\s+worries",        # "No worries" - agreement
+    r"^no\s+need\b",         # "No need" - acknowledgment
+    r"^don't\s+worry",       # "Don't worry" - reassurance
+    r"^don't\s+mind",        # "Don't mind" - agreement
+    r"^don't\s+bother",      # "Don't bother" - polite decline
+    r"^never\s+mind",        # "Never mind" - dismissal
+    r"^stop\s+worrying",     # "Stop worrying" - reassurance
+]
+
+# CJK correction patterns (parallel to English CORRECTION_PATTERNS)
+# These detect explicit corrections in CJK languages
+# Format: (regex_pattern, pattern_name, is_strong)
+CJK_CORRECTION_PATTERNS = [
+    # Japanese
+    (r"^いや[、,. ]", "iya", True),              # いや、〜 - "no, ..."
+    (r"^違う[、,. ]|^ちがう[、,. ]", "chigau", True),  # 違う、〜 - "wrong, ..."
+    (r"そうじゃなく[てけ]|そっちじゃなく[てけ]", "souja-nakute", True),  # "not that"
+    (r"間違[いえっ]て", "machigatte", True),       # 間違ってる - "it's wrong"
+    (r"じゃなくて.{0,30}にして", "janakute-nishite", True),  # 〜じゃなくて〜にして
+    (r"^やめて[。！!]?\s*$", "yamete", True),      # やめて - "stop"
+    (r"^そうじゃない", "souja-nai", True),          # そうじゃない - "that's not right"
+    (r"って言った[のよでじゃ]", "tte-itta", True),   # って言ったのに - "I told you"
+    # Chinese
+    (r"^不是[，,. ]", "bushi", True),              # 不是、〜 - "no, ..."
+    (r"^错了|^錯了", "cuole", True),               # 错了 - "wrong"
+    (r"不要.{0,20}要", "buyao-yao", True),         # 不要X要Y - "don't X, use Y"
+    # Korean
+    (r"^아니[,. ]", "ani", True),                  # 아니, - "no, ..."
+    (r"틀렸", "teullyeoss", True),                 # 틀렸 - "wrong"
 ]
 
 # Maximum prompt length for live capture (UserPromptSubmit hook)
@@ -519,6 +555,14 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
         sentiment: "correction" or "positive"
         decay_days: Number of days until decay
     """
+    # Too short to be actionable (e.g. "OK", "好", "yes")
+    # CJK characters carry more meaning per char, so use a lower threshold
+    stripped = text.strip()
+    has_cjk = bool(re.search(r'[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]', stripped))
+    short_threshold = 2 if has_cjk else 4
+    if len(stripped) <= short_threshold:
+        return (None, "", 0.0, "correction", 90)
+
     # Check for explicit "remember:" - always highest priority
     for pattern, name, confidence, decay in EXPLICIT_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
@@ -535,6 +579,12 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
         if re.search(fp_pattern, text, re.IGNORECASE):
             return (None, "", 0.0, "correction", 90)
 
+    # Check for non-correction English phrases (before correction patterns)
+    # Prevents "No problem", "Don't worry" etc. from being caught as corrections
+    for nc_pattern in NON_CORRECTION_PHRASES:
+        if re.search(nc_pattern, text, re.IGNORECASE):
+            return (None, "", 0.0, "correction", 90)
+
     # Check for positive patterns
     matched_positive = []
     for pattern, name, confidence, decay in POSITIVE_PATTERNS:
@@ -547,7 +597,25 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
     # Skip long messages for weak patterns (likely task requests)
     text_length = len(text)
 
-    # Check for correction patterns
+    # Check for CJK correction patterns (language-specific)
+    matched_cjk = []
+    cjk_strong = False
+    for pattern, name, is_strong in CJK_CORRECTION_PATTERNS:
+        if re.search(pattern, text):
+            matched_cjk.append(name)
+            if is_strong:
+                cjk_strong = True
+
+    if matched_cjk:
+        confidence = 0.75 if cjk_strong else 0.60
+        decay_days = 90 if cjk_strong else 60
+        if text_length < MIN_SHORT_CORRECTION_LENGTH:
+            confidence = min(0.90, confidence + 0.10)
+        elif text_length > 300:
+            confidence = max(0.50, confidence - 0.15)
+        return ("auto", " ".join(matched_cjk), confidence, "correction", decay_days)
+
+    # Check for English correction patterns
     matched_corrections = []
     pattern_count = 0
     has_strong_pattern = False
