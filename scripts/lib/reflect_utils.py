@@ -501,6 +501,7 @@ NON_CORRECTION_PHRASES = [
     r"^no\s+problem",        # "No problem" - agreement
     r"^no\s+worries",        # "No worries" - agreement
     r"^no\s+need\b",         # "No need" - acknowledgment
+    r"^no\s+way\b",          # "No way!" - surprise/exclamation
     r"^don't\s+worry",       # "Don't worry" - reassurance
     r"^don't\s+mind",        # "Don't mind" - agreement
     r"^don't\s+bother",      # "Don't bother" - polite decline
@@ -513,8 +514,8 @@ NON_CORRECTION_PHRASES = [
 # Format: (regex_pattern, pattern_name, is_strong)
 CJK_CORRECTION_PATTERNS = [
     # Japanese
-    (r"^いや[、,. ]", "iya", True),              # いや、〜 - "no, ..."
-    (r"^違う[、,. ]|^ちがう[、,. ]", "chigau", True),  # 違う、〜 - "wrong, ..."
+    (r"^いや[、,.\s]|^いや違", "iya", True),       # いや、〜 / いや違う - "no, ..."
+    (r"^違う[、，,.\s！!。]|^ちがう[、,.\s]", "chigau", True),  # 違う、〜 - "wrong, ..."
     (r"そうじゃなく[てけ]|そっちじゃなく[てけ]", "souja-nakute", True),  # "not that"
     (r"間違[いえっ]て", "machigatte", True),       # 間違ってる - "it's wrong"
     (r"じゃなくて.{0,30}にして", "janakute-nishite", True),  # 〜じゃなくて〜にして
@@ -598,10 +599,11 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
     text_length = len(text)
 
     # Check for CJK correction patterns (language-specific)
+    # Use stripped text for anchor patterns (^/$) to handle leading/trailing whitespace
     matched_cjk = []
     cjk_strong = False
     for pattern, name, is_strong in CJK_CORRECTION_PATTERNS:
-        if re.search(pattern, text):
+        if re.search(pattern, stripped):
             matched_cjk.append(name)
             if is_strong:
                 cjk_strong = True
