@@ -13,6 +13,7 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 - `--organize`: Analyze memory hierarchy and suggest reorganization across tiers.
 - `--include-tool-errors`: Include project-specific tool execution errors in scan (auto-enabled with `--scan-history`).
 - `--model MODEL`: Model for semantic analysis (default: `sonnet`). Use `haiku` for faster/cheaper runs or `opus` for maximum accuracy.
+- `--context-loss`: Scan past sessions for "you forgot / I told you / read the rules" patterns → generate `docs/CONTEXT_LOSS_ANALYSIS.md` and suggest a SESSION RECOVERY section for `AGENTS.md`.
 
 ## Context
 - Project CLAUDE.md: @CLAUDE.md
@@ -443,6 +444,105 @@ Use AskUserQuestion for each proposed reorganization:
 - Preserve section structure in all files
 
 **6. Exit after reorganization (don't process queue).**
+
+### Handle --context-loss Argument
+
+**If user passed `--context-loss`:**
+
+Scan past sessions for patterns where the user had to remind Claude of something it forgot,
+then generate a `docs/CONTEXT_LOSS_ANALYSIS.md` report and suggest a SESSION RECOVERY section
+for `AGENTS.md`.
+
+**1. Find session files (same method as `--scan-history` Step 0.5a).**
+
+**2. Search for "forgotten knowledge" signals:**
+
+```bash
+# English patterns
+grep -h -o '"content":"[^"]*\(you forgot\|forgot how\|read the rules\|check docs\|you used to\|we already\|I told you\|I already told\|I said\|remember to\)[^"]*"' SESSION_FILES 2>/dev/null | head -50
+
+# Additional language patterns (adapt based on detected conversation language)
+# Spanish: "ya te dije\|te olvidaste\|lee las reglas"
+# German: "du hast vergessen\|ich habe dir gesagt\|lies die regeln"
+# Russian: "ты забыл\|я уже говорил\|прочитай правила"
+```
+
+**IMPORTANT**: Also detect when user says things like "no, use X" or "wrong, use Y" repeatedly across sessions for the same topic — these indicate recurring forgotten patterns, not just one-off corrections.
+
+**3. Categorize patterns:**
+
+| Category | Example signal | Fix type |
+|----------|---------------|----------|
+| **Build environment** | "compile on X not Y" | AGENTS.md quick command |
+| **Architecture** | "app is now native not web" | AGENTS.md architecture section |
+| **Tool location** | "use the script in scripts/, not the global one" | AGENTS.md paths table |
+| **Workflow** | "always run X before Y" | AGENTS.md quick commands |
+| **Project identity** | "we're on v2, not v1" | AGENTS.md project identity |
+| **Recurring correction** | Same "no, use X" pattern in 3+ sessions | Rules file candidate |
+
+**4. Generate `docs/CONTEXT_LOSS_ANALYSIS.md`:**
+
+```markdown
+# Context Loss Analysis
+
+Generated: YYYY-MM-DD | Sessions analyzed: N
+
+## Summary
+
+Found M patterns across N sessions where knowledge was repeatedly lost.
+
+## Patterns
+
+### 1. [Category: Build Environment]
+
+**User reminders found (N occurrences):**
+- "[exact quote]" — session abc123
+- "[exact quote]" — session def456
+
+**Root cause:** This information is not documented in AGENTS.md.
+
+**Recommended fix:** Add to AGENTS.md Quick Commands section.
+
+---
+
+### 2. [Category: ...]
+...
+
+## Recommendations
+
+| Priority | Fix | Where |
+|----------|-----|-------|
+| High | Add build target table | AGENTS.md → SESSION RECOVERY |
+| Medium | Document architecture state | AGENTS.md → Architecture section |
+```
+
+**5. Propose SESSION RECOVERY section for AGENTS.md:**
+
+Use AskUserQuestion to ask if they want to add a SESSION RECOVERY section to AGENTS.md:
+
+```markdown
+## SESSION RECOVERY (Read after compact/clear)
+
+### Critical Facts
+
+| Item | Value |
+|------|-------|
+| [Key 1] | [Value extracted from patterns] |
+| [Key 2] | [Value extracted from patterns] |
+
+### Quick Commands
+
+\`\`\`bash
+# [Task extracted from patterns]
+[command]
+\`\`\`
+```
+
+If user approves, prepend it near the top of AGENTS.md (or update existing section).
+
+**6. Exit after context loss analysis (don't process queue).**
+
+---
 
 ### First-Run Detection (Per-Project)
 

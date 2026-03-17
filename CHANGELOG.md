@@ -5,6 +5,14 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`/reflect --context-loss`** — Scans past sessions for patterns where the user had to
+  remind Claude of forgotten knowledge ("you forgot", "I told you", "read the rules").
+  Generates `docs/CONTEXT_LOSS_ANALYSIS.md` with categorized patterns and suggests a
+  SESSION RECOVERY section for `AGENTS.md` to prevent recurring context loss.
+
 ## [3.1.0] - 2026-03-16
 
 ### Added
