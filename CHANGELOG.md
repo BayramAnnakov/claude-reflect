@@ -5,6 +5,14 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`CLAUDE_PLUGIN_ROOT` fallback in `hooks/hooks.json`** — All 4 hooks now use shell parameter
+  expansion `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-reflect-marketplace/claude-reflect}`
+  so hooks degrade gracefully instead of failing with a broken path when Claude Code does not
+  expand the variable (fixes #17).
+
 ## [3.1.0] - 2026-03-16
 
 ### Added

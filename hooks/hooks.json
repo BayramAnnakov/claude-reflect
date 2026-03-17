@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/capture_learning.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-reflect-marketplace/claude-reflect}/scripts/capture_learning.py\""
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/check_learnings.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-reflect-marketplace/claude-reflect}/scripts/check_learnings.py\""
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/post_commit_reminder.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-reflect-marketplace/claude-reflect}/scripts/post_commit_reminder.py\""
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/session_start_reminder.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-reflect-marketplace/claude-reflect}/scripts/session_start_reminder.py\""
           }
         ]
       }
