@@ -5,6 +5,19 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`SessionEnd` hook** — New `session_end_log.py` hook that fires at session end to
+  capture a structured activity summary (topics covered, tools used, corrections detected).
+  - Writes to `~/.claude/session-logs/YYYY-MM-DD-HHMMSS.md` by default
+  - Optional webhook: set `CLAUDE_REFLECT_SESSION_LOG_WEBHOOK=<url>` to POST JSON payload
+  - Optional command: set `CLAUDE_REFLECT_SESSION_LOG_COMMAND=<cmd>` to pipe JSON to a custom script
+  - Disable entirely: set `CLAUDE_REFLECT_SESSION_LOG=false`
+  - Skips very short sessions (< 4 messages) to avoid noise
+- **23 new tests** in `tests/test_session_end_log.py` covering parse_session, derive_topics,
+  format_markdown, format_json, write_local, and _extract_texts.
+
 ## [3.1.0] - 2026-03-16
 
 ### Added

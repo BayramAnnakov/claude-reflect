@@ -47,6 +47,7 @@ tests/                      → Test suite (pytest)
 - `scripts/lib/semantic_detector.py`: AI-powered semantic analysis via `claude -p`
 - `scripts/capture_learning.py`: Pattern detection (correction, positive, explicit markers) with confidence scoring
 - `scripts/check_learnings.py`: PreCompact hook that backs up queue before context compaction
+- `scripts/session_end_log.py`: SessionEnd hook that captures activity summary (topics, tools, corrections); writes local file or calls webhook/command
 - `scripts/extract_session_learnings.py`: Extracts user messages from session JSONL files
 - `scripts/extract_tool_rejections.py`: Extracts user corrections from tool rejections
 - `scripts/compare_detection.py`: Compare regex vs semantic detection on session data
@@ -87,6 +88,7 @@ The plugin registers via `.claude-plugin/plugin.json`:
 | UserPromptSubmit | `capture_learning.py` | Detect corrections and queue them |
 | PreCompact | `check_learnings.py` | Backup queue before compaction |
 | PostToolUse (Bash) | `post_commit_reminder.py` | Remind to /reflect after commits |
+| SessionEnd | `session_end_log.py` | Capture session activity summary |
 
 ## Detection Methods
 

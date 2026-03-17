@@ -44,6 +44,7 @@ Example: You've asked "review my productivity" 12 times → suggests creating `/
 | **Skill Discovery** | Finds repeating patterns in your history → generates commands |
 | **Multi-language** | AI understands corrections in any language |
 | **Skill Improvement** | Corrections during `/deploy` improve the deploy skill itself |
+| **Session Logging** | Auto-captures session activity at end → local file + optional webhook |
 
 ## Installation
 
@@ -107,6 +108,7 @@ Hooks run automatically to detect and queue corrections:
 | `capture_learning.py` | Every prompt | Detects correction patterns and queues them |
 | `check_learnings.py` | Before compaction | Backs up queue and informs user |
 | `post_commit_reminder.py` | After git commit | Reminds to run /reflect after completing work |
+| `session_end_log.py` | Session end | Captures activity summary → local file or webhook |
 
 **Stage 2: Process (Manual)**
 
