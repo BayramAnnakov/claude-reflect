@@ -44,6 +44,7 @@ Example: You've asked "review my productivity" 12 times → suggests creating `/
 | **Skill Discovery** | Finds repeating patterns in your history → generates commands |
 | **Multi-language** | AI understands corrections in any language |
 | **Skill Improvement** | Corrections during `/deploy` improve the deploy skill itself |
+| **Workflow Extraction** | Finds recurring command sequences → generates `WORKFLOWS.md` |
 
 ## Installation
 
@@ -82,6 +83,7 @@ After installation, **restart Claude Code** (exit and reopen). Then hooks auto-c
 | `/reflect --targets` | Show detected config files (CLAUDE.md, AGENTS.md) |
 | `/reflect --review` | Show queue with confidence scores and decay status |
 | `/reflect --dedupe` | Find and consolidate similar entries in CLAUDE.md |
+| `/reflect --workflows` | Extract recurring procedures → `docs/WORKFLOWS.md` |
 | `/reflect --include-tool-errors` | Include tool execution errors in scan |
 | `/reflect-skills` | Discover skill candidates from repeating patterns |
 | `/reflect-skills --days N` | Analyze last N days (default: 14) |
