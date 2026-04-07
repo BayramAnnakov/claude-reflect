@@ -59,7 +59,7 @@ claude plugin install claude-reflect@claude-reflect-marketplace
 
 After installation, **restart Claude Code** (exit and reopen). Then hooks auto-configure and commands are ready.
 
-> **First run?** When you run `/reflect` for the first time, you'll be prompted to scan your past sessions for learnings.
+> **First run?** When you run `/claude-reflect:reflect` for the first time, you'll be prompted to scan your past sessions for learnings.
 
 ### Prerequisites
 
@@ -76,18 +76,18 @@ After installation, **restart Claude Code** (exit and reopen). Then hooks auto-c
 
 | Command | Description |
 |---------|-------------|
-| `/reflect` | Process queued learnings with human review |
-| `/reflect --scan-history` | Scan ALL past sessions for missed learnings |
-| `/reflect --dry-run` | Preview changes without applying |
-| `/reflect --targets` | Show detected config files (CLAUDE.md, AGENTS.md) |
-| `/reflect --review` | Show queue with confidence scores and decay status |
-| `/reflect --dedupe` | Find and consolidate similar entries in CLAUDE.md |
-| `/reflect --include-tool-errors` | Include tool execution errors in scan |
-| `/reflect-skills` | Discover skill candidates from repeating patterns |
-| `/reflect-skills --days N` | Analyze last N days (default: 14) |
-| `/reflect-skills --project <path>` | Analyze specific project |
-| `/reflect-skills --all-projects` | Scan all projects for cross-project patterns |
-| `/reflect-skills --dry-run` | Preview patterns without generating skill files |
+| `/claude-reflect:reflect` | Process queued learnings with human review |
+| `/claude-reflect:reflect --scan-history` | Scan ALL past sessions for missed learnings |
+| `/claude-reflect:reflect --dry-run` | Preview changes without applying |
+| `/claude-reflect:reflect --targets` | Show detected config files (CLAUDE.md, AGENTS.md) |
+| `/claude-reflect:reflect --review` | Show queue with confidence scores and decay status |
+| `/claude-reflect:reflect --dedupe` | Find and consolidate similar entries in CLAUDE.md |
+| `/claude-reflect:reflect --include-tool-errors` | Include tool execution errors in scan |
+| `/claude-reflect:reflect-skills` | Discover skill candidates from repeating patterns |
+| `/claude-reflect:reflect-skills --days N` | Analyze last N days (default: 14) |
+| `/claude-reflect:reflect-skills --project <path>` | Analyze specific project |
+| `/claude-reflect:reflect-skills --all-projects` | Scan all projects for cross-project patterns |
+| `/claude-reflect:reflect-skills --dry-run` | Preview patterns without generating skill files |
 | `/skip-reflect` | Discard all queued learnings |
 | `/view-queue` | View pending learnings without processing |
 
@@ -110,7 +110,7 @@ Hooks run automatically to detect and queue corrections:
 
 **Stage 2: Process (Manual)**
 
-Run `/reflect` to review and apply queued learnings to CLAUDE.md.
+Run `/claude-reflect:reflect` to review and apply queued learnings to CLAUDE.md.
 
 ### Detection Methods
 
@@ -126,7 +126,7 @@ Fast pattern matching during sessions detects:
 
 **2. Semantic AI validation (during /reflect)**
 
-When you run `/reflect`, an AI-powered semantic filter:
+When you run `/claude-reflect:reflect`, an AI-powered semantic filter:
 - **Multi-language support** — understands corrections in any language
 - **Better accuracy** — filters out false positives from regex
 - **Cleaner learnings** — extracts concise, actionable statements
@@ -137,7 +137,7 @@ Each captured learning has a **confidence score** (0.60-0.95). The final score i
 
 ### Human Review
 
-When you run `/reflect`, Claude presents a summary table with options:
+When you run `/claude-reflect:reflect`, Claude presents a summary table with options:
 - **Apply** - Accept the learning and add to CLAUDE.md
 - **Edit before applying** - Modify the learning text first
 - **Skip** - Don't apply this learning
@@ -151,17 +151,17 @@ Approved learnings are synced to:
 - `./.claude/commands/*.md` (skill files - when correction relates to a skill)
 - `AGENTS.md` (if exists - works with Codex, Cursor, Aider, Jules, Zed, Factory)
 
-Run `/reflect --targets` to see which files will be updated.
+Run `/claude-reflect:reflect --targets` to see which files will be updated.
 
 ### Skill Discovery
 
-Run `/reflect-skills` to discover repeating patterns in your sessions that could become reusable skills:
+Run `/claude-reflect:reflect-skills` to discover repeating patterns in your sessions that could become reusable skills:
 
 ```
-/reflect-skills                 # Analyze current project (last 14 days)
-/reflect-skills --days 30       # Analyze last 30 days
-/reflect-skills --all-projects  # Analyze all projects (slower)
-/reflect-skills --dry-run       # Preview patterns without generating files
+/claude-reflect:reflect-skills                 # Analyze current project (last 14 days)
+/claude-reflect:reflect-skills --days 30       # Analyze last 30 days
+/claude-reflect:reflect-skills --all-projects  # Analyze all projects (slower)
+/claude-reflect:reflect-skills --dry-run       # Preview patterns without generating files
 ```
 
 **Features:**
@@ -337,7 +337,7 @@ claude-reflect/
 First time using claude-reflect? Run:
 
 ```bash
-/reflect --scan-history
+/claude-reflect:reflect --scan-history
 ```
 
 This scans all your past sessions for corrections you made, so you don't lose learnings from before installation.
@@ -361,7 +361,7 @@ Before adding a learning, existing CLAUDE.md content is checked. If similar cont
 
 ### Semantic Deduplication
 
-Over time, CLAUDE.md can accumulate similar entries. Run `/reflect --dedupe` to:
+Over time, CLAUDE.md can accumulate similar entries. Run `/claude-reflect:reflect --dedupe` to:
 - Find semantically similar entries (even with different wording)
 - Propose consolidated versions
 - Clean up redundant learnings
@@ -384,20 +384,20 @@ After:
    remember: always use venv for Python projects
    ```
 
-2. **Run /reflect after git commits** - The hook reminds you, but make it a habit
+2. **Run /claude-reflect:reflect after git commits** - The hook reminds you, but make it a habit
 
 3. **Historical scan on new machines** - When setting up a new dev environment:
    ```
-   /reflect --scan-history --days 90
+   /claude-reflect:reflect --scan-history --days 90
    ```
 
 4. **Project vs Global** - Model names and general patterns go global; project-specific conventions stay in project CLAUDE.md
 
-5. **Discover skills monthly** - Run `/reflect-skills --days 30` monthly to find automation opportunities you might have missed
+5. **Discover skills monthly** - Run `/claude-reflect:reflect-skills --days 30` monthly to find automation opportunities you might have missed
 
-6. **Skills get smarter** - When you correct Claude during a skill, that correction can be routed back to the skill file itself via `/reflect`
+6. **Skills get smarter** - When you correct Claude during a skill, that correction can be routed back to the skill file itself via `/claude-reflect:reflect`
 
-7. **Extend session retention** - Claude Code deletes local sessions after 30 days by default. Since claude-reflect relies on session history for `/reflect --scan-history` and `/reflect-skills`, extend this in `~/.claude/settings.json`:
+7. **Extend session retention** - Claude Code deletes local sessions after 30 days by default. Since claude-reflect relies on session history for `/claude-reflect:reflect --scan-history` and `/claude-reflect:reflect-skills`, extend this in `~/.claude/settings.json`:
    ```json
    { "cleanupPeriodDays": 99999 }
    ```
