@@ -6,6 +6,7 @@ Cross-platform compatible (Windows, macOS, Linux).
 import json
 import re
 import os
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
@@ -187,17 +188,284 @@ def _parse_rule_frontmatter(filepath: Path) -> Optional[Dict[str, Any]]:
     return result if result else None
 
 
-def find_claude_files(root_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+# =============================================================================
+# Inclusion graph traversal
+# =============================================================================
+#
+# Memory files (CLAUDE.md, AGENTS.md, rule files) often delegate guidance to
+# other docs via:
+#   - @filename            Claude Code's native include syntax
+#   - [text](relative.md)  standard markdown links
+#
+# These transitively-referenced docs are part of the project's de-facto AI
+# memory and should be reachable as routing targets in /reflect. The traversal
+# is bounded (depth cap + cycle detection) and skips fenced code blocks,
+# external URLs, and same-file anchors.
+
+# Default depth cap: 0 = seeds only, 1 = direct references, ...
+# 3 hops covers the typical CLAUDE.md → AGENTS.md → standards.md → details.md
+# chain. Real-world docs rarely delegate further.
+DEFAULT_INCLUSION_DEPTH = 3
+
+# Soft cap on total nodes discovered by inclusion-graph BFS, across all seeds.
+# Prevents pathological fanout from exhausting memory on a misconfigured tree.
+DEFAULT_INCLUSION_MAX_NODES = 200
+
+# Cap on bytes read from any single memory file when extracting inclusions.
+MAX_INCLUSION_FILE_BYTES = 1 * 1024 * 1024
+
+# @-include syntax: @path.md, @./path.md, @~/.claude/CLAUDE.md
+# Lookbehind prevents matching email addresses (foo@bar.md).
+_INCLUDE_RE = re.compile(r"(?<![\w.])@([\w./\-_~]+\.md)\b")
+
+# Inline markdown link: [text](target). Captures the target path.
+# Reference-style ([text][ref]) is intentionally not handled.
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+# Fenced code block delimiters: ``` or ~~~ (any indentation, any info string).
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+
+# External URL schemes — never followed.
+_EXTERNAL_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*:", re.IGNORECASE)
+
+
+def _parse_inclusions(filepath: Path) -> List[str]:
+    """Extract @-include and inline markdown link targets from a memory file.
+
+    Skips fenced code blocks, external URLs, and same-file anchors.
+    Strips in-page anchors (foo.md#section → foo.md). Reads are capped
+    at MAX_INCLUSION_FILE_BYTES; returns [] on any read error.
+
+    Returns:
+        Raw target strings in document order.
+    """
+    try:
+        with open(filepath, "rb") as fh:
+            blob = fh.read(MAX_INCLUSION_FILE_BYTES)
+    except (IOError, OSError):
+        return []
+    text = blob.decode("utf-8", errors="replace")
+
+    refs: List[str] = []
+    in_fence = False
+
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        for match in _INCLUDE_RE.finditer(line):
+            refs.append(match.group(1))
+
+        for match in _MD_LINK_RE.finditer(line):
+            target = match.group(1).strip()
+            if not target or target.startswith("#"):
+                continue
+            if _EXTERNAL_SCHEME_RE.match(target):
+                continue
+            if "#" in target:
+                target = target.split("#", 1)[0]
+            if target:
+                refs.append(target)
+
+    return refs
+
+
+def _resolve_inclusion(
+    target: str,
+    source_file: Path,
+    allowed_roots: Optional[List[Path]] = None,
+) -> Optional[Path]:
+    """Resolve a raw inclusion target to an absolute, existing .md file.
+
+    Handles ~ expansion, absolute paths, and paths relative to source_file's
+    directory. Restricts to .md files — checked on both the raw target and
+    the resolved suffix, so a `foo.md` symlink to /etc/passwd is rejected.
+
+    Confines the resolved path to `allowed_roots` when provided (typically
+    the project root plus ~/.claude/). When `allowed_roots` is None, no
+    containment check is applied — used by tests in isolation.
+
+    Returns the resolved Path, or None if any check fails.
+    """
+    if not target.endswith(".md"):
+        return None
+
+    raw = target.replace("\\", "/")  # Tolerate Windows-style separators in links
+
+    try:
+        if raw.startswith("~"):
+            candidate = Path(raw).expanduser()
+        elif Path(raw).is_absolute():
+            candidate = Path(raw)
+        else:
+            candidate = source_file.parent / raw
+        resolved = candidate.resolve()
+    except (OSError, ValueError):
+        return None
+
+    if resolved.suffix.lower() != ".md":
+        return None
+
+    try:
+        if not resolved.is_file():
+            return None
+    except OSError:
+        return None
+
+    if allowed_roots is not None:
+        for ancestor in allowed_roots:
+            try:
+                resolved.relative_to(ancestor)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+
+    return resolved
+
+
+def _format_relative_path(path: Path, root: Path) -> str:
+    """Format a path for display: project-relative, then home-relative, then absolute.
+
+    Both inputs are resolved to canonical form so symlinks (notably macOS's
+    /tmp → /private/tmp) don't break the relative_to() comparison. The
+    home-relative branch handles inclusions reached from the global
+    ~/.claude/CLAUDE.md (e.g., user-rules referenced by @ from there).
+    """
+    try:
+        canonical = path.resolve()
+    except OSError:
+        canonical = path
+    try:
+        canonical_root = root.resolve()
+    except OSError:
+        canonical_root = root
+
+    try:
+        rel = canonical.relative_to(canonical_root)
+        return f"./{rel.as_posix()}"
+    except ValueError:
+        pass
+    try:
+        rel = canonical.relative_to(Path.home().resolve())
+        return f"~/{rel.as_posix()}"
+    except (OSError, ValueError):
+        return canonical.as_posix()
+
+
+def _follow_inclusion_graph(
+    seed_files: List[Dict[str, Any]],
+    root: Path,
+    max_depth: int = DEFAULT_INCLUSION_DEPTH,
+    max_nodes: int = DEFAULT_INCLUSION_MAX_NODES,
+) -> List[Dict[str, Any]]:
+    """BFS over @-includes and markdown links from seed memory files.
+
+    Each newly discovered file is reported once with the immediate-parent
+    provenance. FIFO dequeue order means depth N is fully drained before
+    depth N+1, so reported `depth`/`referenced_from` reflect a shortest
+    path from the seed set.
+
+    Args:
+        seed_files: Result entries from the regular discovery pass. Each
+            must have a "path" key.
+        root: Project root. Inclusions confine to {root, get_claude_dir()}
+            so out-of-allowlist references (e.g. /etc/passwd.md) are rejected.
+        max_depth: Maximum hops from any seed (>=0). 0 disables traversal.
+        max_nodes: Cap on total newly-discovered files.
+
+    Returns:
+        List of dicts for newly discovered referenced docs (excluding seeds):
+            {path, relative_path, type='referenced', referenced_from, depth}
+    """
+    if max_depth <= 0 or not seed_files:
+        return []
+
+    try:
+        canonical_root = root.resolve()
+    except OSError:
+        canonical_root = root
+    try:
+        canonical_claude = get_claude_dir().resolve()
+    except OSError:
+        canonical_claude = get_claude_dir()
+    allowed_roots: List[Path] = [canonical_root, canonical_claude]
+
+    seen: set = set()
+    queue: "deque[Tuple[Path, int]]" = deque()
+    for f in seed_files:
+        try:
+            resolved = Path(f["path"]).resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        queue.append((resolved, 0))
+    seed_paths = set(seen)
+
+    discovered: List[Dict[str, Any]] = []
+
+    while queue:
+        current, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        if len(discovered) >= max_nodes:
+            break
+
+        formatted_current = _format_relative_path(current, root)
+
+        for raw_target in _parse_inclusions(current):
+            resolved = _resolve_inclusion(raw_target, current, allowed_roots)
+            if resolved is None or resolved in seen:
+                continue
+            seen.add(resolved)
+
+            if resolved in seed_paths:
+                continue
+
+            discovered.append({
+                "path": str(resolved),
+                "relative_path": _format_relative_path(resolved, root),
+                "type": "referenced",
+                "referenced_from": formatted_current,
+                "depth": depth + 1,
+            })
+            if len(discovered) >= max_nodes:
+                break
+            queue.append((resolved, depth + 1))
+
+    return discovered
+
+
+def find_claude_files(
+    root_dir: Optional[str] = None,
+    follow_includes: bool = True,
+    max_depth: int = DEFAULT_INCLUSION_DEPTH,
+    max_nodes: int = DEFAULT_INCLUSION_MAX_NODES,
+) -> List[Dict[str, Any]]:
     """
     Find all memory tier files in the project tree.
 
     Args:
-        root_dir: Root directory to search from (defaults to cwd)
+        root_dir: Root directory to search from (defaults to cwd).
+        follow_includes: If True (default), also surface .md docs that the
+            discovered memory files transitively reference via @-includes
+            or markdown links. Bounded by max_depth and cycle-safe; resolved
+            paths are confined to root_dir and ~/.claude/.
+        max_depth: Maximum hops to follow from any seed memory file when
+            follow_includes is True. Set to 0 to disable traversal.
+        max_nodes: Cap on total newly-discovered referenced files.
 
     Returns:
         List of dicts with {path, relative_path, type, ...} for each file found.
-        Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule'.
-        Rule files include a 'frontmatter' field with parsed YAML frontmatter.
+        Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule',
+        'referenced'. Rule files include a 'frontmatter' field. Referenced
+        files include 'referenced_from' and 'depth' fields.
     """
     root = Path(root_dir) if root_dir else Path.cwd()
     results = []
@@ -272,6 +540,12 @@ def find_claude_files(root_dir: Optional[str] = None) -> List[Dict[str, Any]]:
                 "type": "user-rule",
                 "frontmatter": frontmatter,
             })
+
+    # Follow inclusion graph to surface transitively referenced .md docs
+    if follow_includes:
+        results.extend(_follow_inclusion_graph(
+            results, root, max_depth=max_depth, max_nodes=max_nodes,
+        ))
 
     return results
 

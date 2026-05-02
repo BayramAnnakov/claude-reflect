@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from lib.reflect_utils import (
     _parse_rule_frontmatter,
+    _parse_inclusions,
+    _resolve_inclusion,
+    _follow_inclusion_graph,
     find_claude_files,
     suggest_claude_file,
     get_project_folder_name,
@@ -399,6 +402,498 @@ class TestReadAllMemoryEntries(unittest.TestCase):
         entries = read_all_memory_entries(self.temp_dir)
         self.assertEqual(entries, [])
 
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_includes_referenced_file_bullets(self, mock_claude_dir):
+        """Bullets from inclusion-graph-discovered docs feed the dedup pool.
+
+        This is the load-bearing integration: /reflect's cross-tier dedup
+        only reaches docs that find_claude_files() surfaces.
+        """
+        fake_claude = Path(self.temp_dir) / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        (Path(self.temp_dir) / "CLAUDE.md").write_text(
+            "# Project\n- Use postgres\n\nSee @standards.md\n"
+        )
+        (Path(self.temp_dir) / "standards.md").write_text(
+            "# Standards\n- Follow REST conventions\n- Async by default\n"
+        )
+
+        entries = read_all_memory_entries(self.temp_dir)
+        ref_entries = [e for e in entries if e["source_type"] == "referenced"]
+        texts = sorted(e["text"] for e in ref_entries)
+        self.assertEqual(texts, ["Async by default", "Follow REST conventions"])
+        self.assertEqual(ref_entries[0]["source_file"], "./standards.md")
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_rule_file_can_be_inclusion_source(self, mock_claude_dir):
+        """A doc referenced from a .claude/rules/*.md file is reachable."""
+        fake_claude = Path(self.temp_dir) / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        (Path(self.temp_dir) / "CLAUDE.md").write_text("# P\n")
+        rules = Path(self.temp_dir) / ".claude" / "rules"
+        rules.mkdir(parents=True)
+        (rules / "python.md").write_text(
+            "# Python\nSee [Style](../../docs/style.md)\n"
+        )
+        docs = Path(self.temp_dir) / "docs"
+        docs.mkdir()
+        (docs / "style.md").write_text("# Style\n- 4-space indent\n")
+
+        from lib.reflect_utils import find_claude_files
+        files = find_claude_files(self.temp_dir)
+        ref = next(f for f in files if f["type"] == "referenced")
+        self.assertEqual(Path(ref["path"]).name, "style.md")
+        self.assertIn("python.md", ref["referenced_from"])
+
+
+class TestParseInclusions(unittest.TestCase):
+    """Tests for _parse_inclusions() — extracting @-includes and md-links."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _write(self, name, content):
+        path = Path(self.temp_dir) / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_at_include_simple(self):
+        """@filename.md is captured as an include."""
+        f = self._write("CLAUDE.md", "- See @AGENTS.md for details\n")
+        self.assertEqual(_parse_inclusions(f), ["AGENTS.md"])
+
+    def test_at_include_with_path(self):
+        """@-includes capture ~ and relative path forms verbatim."""
+        f = self._write(
+            "CLAUDE.md",
+            "- Project: @CLAUDE.md\n- Global: @~/.claude/CLAUDE.md\n- Sub: @./docs/standards.md\n",
+        )
+        refs = _parse_inclusions(f)
+        self.assertIn("CLAUDE.md", refs)
+        self.assertIn("~/.claude/CLAUDE.md", refs)
+        self.assertIn("./docs/standards.md", refs)
+
+    def test_at_include_skips_email_addresses(self):
+        """@-pattern doesn't match email addresses ending in .md."""
+        f = self._write("CLAUDE.md", "Contact: foo@bar.md is not an include\n")
+        self.assertEqual(_parse_inclusions(f), [])
+
+    def test_md_link_simple(self):
+        """[text](path.md) is captured."""
+        f = self._write("CLAUDE.md", "See [Standards](standards.md) for details.\n")
+        self.assertEqual(_parse_inclusions(f), ["standards.md"])
+
+    def test_md_link_with_title(self):
+        """Link with title attribute is captured (title stripped)."""
+        f = self._write("CLAUDE.md", '[Doc](./docs/api.md "API Doc")\n')
+        self.assertEqual(_parse_inclusions(f), ["./docs/api.md"])
+
+    def test_md_link_skips_external_urls(self):
+        """https://, http://, mailto:, and other schemes are ignored."""
+        f = self._write(
+            "CLAUDE.md",
+            "[GitHub](https://github.com/x.md)\n"
+            "[Site](http://example.com/y.md)\n"
+            "[Mail](mailto:foo@bar.com)\n",
+        )
+        self.assertEqual(_parse_inclusions(f), [])
+
+    def test_md_link_skips_anchor_only(self):
+        """[text](#section) is a same-file anchor and skipped."""
+        f = self._write("CLAUDE.md", "[Top](#top)\n[Section](#section-1)\n")
+        self.assertEqual(_parse_inclusions(f), [])
+
+    def test_md_link_strips_in_page_anchor(self):
+        """[text](foo.md#section) → foo.md (anchor stripped)."""
+        f = self._write("CLAUDE.md", "[Section](standards.md#api)\n")
+        self.assertEqual(_parse_inclusions(f), ["standards.md"])
+
+    def test_skips_fenced_code_blocks(self):
+        """References inside ``` and ~~~ fences are not captured."""
+        f = self._write(
+            "CLAUDE.md",
+            "Real: @real.md\n"
+            "```\n@fake.md\n[ignored](nope.md)\n```\n"
+            "Mid: @mid.md\n"
+            "~~~\n@tilde.md\n~~~\n"
+            "After: @after.md\n",
+        )
+        refs = _parse_inclusions(f)
+        self.assertIn("real.md", refs)
+        self.assertIn("mid.md", refs)
+        self.assertIn("after.md", refs)
+        self.assertNotIn("fake.md", refs)
+        self.assertNotIn("nope.md", refs)
+        self.assertNotIn("tilde.md", refs)
+
+    def test_unreadable_file_returns_empty(self):
+        """Missing or unreadable file yields no refs (pins error branch)."""
+        self.assertEqual(_parse_inclusions(Path("/nonexistent/file.md")), [])
+
+
+class TestResolveInclusion(unittest.TestCase):
+    """Tests for _resolve_inclusion() — path resolution + safety checks."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_resolve_relative_to_source_dir(self):
+        """Relative target resolves against the source file's directory."""
+        sub = Path(self.temp_dir) / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("# A")
+        (sub / "standards.md").write_text("# S")
+        result = _resolve_inclusion("standards.md", sub / "AGENTS.md")
+        self.assertEqual(result, (sub / "standards.md").resolve())
+
+    def test_resolve_absolute_path(self):
+        """Absolute target is used as-is."""
+        target = Path(self.temp_dir) / "abs.md"
+        target.write_text("# X")
+        result = _resolve_inclusion(str(target), Path(self.temp_dir) / "src.md")
+        self.assertEqual(result, target.resolve())
+
+    def test_resolve_rejects_non_md(self):
+        """Non-.md targets return None even if the file exists."""
+        sub = Path(self.temp_dir) / "sub"
+        sub.mkdir()
+        (sub / "script.py").write_text("print('x')")
+        result = _resolve_inclusion("script.py", sub / "CLAUDE.md")
+        self.assertIsNone(result)
+
+    def test_resolve_rejects_missing_file(self):
+        """Targets pointing at non-existent files return None."""
+        result = _resolve_inclusion(
+            "missing.md", Path(self.temp_dir) / "src.md"
+        )
+        self.assertIsNone(result)
+
+    def test_resolve_rejects_directory(self):
+        """Directories named foo.md are not memory targets."""
+        d = Path(self.temp_dir) / "weird.md"
+        d.mkdir()
+        result = _resolve_inclusion("weird.md", Path(self.temp_dir) / "src.md")
+        self.assertIsNone(result)
+
+
+class TestFollowInclusionGraph(unittest.TestCase):
+    """Tests for _follow_inclusion_graph() — bounded BFS traversal."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.root = Path(self.temp_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _seed(self, path):
+        return [{"path": str(path), "relative_path": "./CLAUDE.md", "type": "root"}]
+
+    def test_one_hop_at_include(self):
+        """CLAUDE.md → @AGENTS.md is discovered."""
+        claude = self.root / "CLAUDE.md"
+        agents = self.root / "AGENTS.md"
+        claude.write_text("- See @AGENTS.md\n")
+        agents.write_text("# Agents\n")
+
+        discovered = _follow_inclusion_graph(self._seed(claude), self.root)
+        self.assertEqual(len(discovered), 1)
+        entry = discovered[0]
+        self.assertEqual(entry["type"], "referenced")
+        self.assertEqual(entry["depth"], 1)
+        self.assertEqual(entry["relative_path"], "./AGENTS.md")
+        self.assertEqual(entry["referenced_from"], "./CLAUDE.md")
+
+    def test_one_hop_md_link(self):
+        """CLAUDE.md → [Standards](standards.md) is discovered."""
+        claude = self.root / "CLAUDE.md"
+        standards = self.root / "standards.md"
+        claude.write_text("[Standards](standards.md)\n")
+        standards.write_text("# S\n")
+
+        discovered = _follow_inclusion_graph(self._seed(claude), self.root)
+        self.assertEqual(len(discovered), 1)
+        self.assertEqual(discovered[0]["relative_path"], "./standards.md")
+
+    def test_two_hops(self):
+        """CLAUDE.md → AGENTS.md → standards.md surfaces both."""
+        claude = self.root / "CLAUDE.md"
+        agents = self.root / "AGENTS.md"
+        standards = self.root / "standards.md"
+        claude.write_text("- @AGENTS.md\n")
+        agents.write_text("- [Standards](standards.md)\n")
+        standards.write_text("# Standards\n")
+
+        discovered = _follow_inclusion_graph(self._seed(claude), self.root)
+        paths = sorted(d["relative_path"] for d in discovered)
+        self.assertEqual(paths, ["./AGENTS.md", "./standards.md"])
+
+        depth_by_name = {Path(d["path"]).name: d["depth"] for d in discovered}
+        self.assertEqual(depth_by_name["AGENTS.md"], 1)
+        self.assertEqual(depth_by_name["standards.md"], 2)
+        # Provenance: standards.md was reached via AGENTS.md
+        std_entry = next(d for d in discovered if Path(d["path"]).name == "standards.md")
+        self.assertEqual(std_entry["referenced_from"], "./AGENTS.md")
+
+    def test_depth_cap_stops_traversal(self):
+        """max_depth=1 stops after one hop."""
+        a = self.root / "CLAUDE.md"
+        b = self.root / "B.md"
+        c = self.root / "C.md"
+        a.write_text("@B.md\n")
+        b.write_text("@C.md\n")
+        c.write_text("# C\n")
+
+        discovered = _follow_inclusion_graph(self._seed(a), self.root, max_depth=1)
+        names = sorted(Path(d["path"]).name for d in discovered)
+        self.assertEqual(names, ["B.md"])
+
+    def test_depth_cap_zero_disables_traversal(self):
+        """max_depth=0 means no traversal."""
+        a = self.root / "CLAUDE.md"
+        b = self.root / "B.md"
+        a.write_text("@B.md\n")
+        b.write_text("# B\n")
+
+        discovered = _follow_inclusion_graph(self._seed(a), self.root, max_depth=0)
+        self.assertEqual(discovered, [])
+
+    def test_cycle_safe(self):
+        """A → B → A does not infinitely loop, and each file is reported once."""
+        a = self.root / "CLAUDE.md"
+        b = self.root / "B.md"
+        a.write_text("@B.md\n")
+        b.write_text("@CLAUDE.md\n")
+
+        discovered = _follow_inclusion_graph(self._seed(a), self.root)
+        names = [Path(d["path"]).name for d in discovered]
+        self.assertEqual(names, ["B.md"])  # CLAUDE.md is a seed, not reported
+
+    def test_diamond_dedup(self):
+        """A→B and A→C both linking to D yields D only once."""
+        a = self.root / "CLAUDE.md"
+        b = self.root / "B.md"
+        c = self.root / "C.md"
+        d = self.root / "D.md"
+        a.write_text("@B.md\n@C.md\n")
+        b.write_text("@D.md\n")
+        c.write_text("@D.md\n")
+        d.write_text("# D\n")
+
+        discovered = _follow_inclusion_graph(self._seed(a), self.root)
+        d_entries = [x for x in discovered if Path(x["path"]).name == "D.md"]
+        self.assertEqual(len(d_entries), 1)
+
+    def test_seed_skipped_when_referenced(self):
+        """Following a reference back to an existing seed doesn't re-emit it."""
+        claude = self.root / "CLAUDE.md"
+        local = self.root / "CLAUDE.local.md"
+        claude.write_text("@CLAUDE.local.md\n")
+        local.write_text("# Local\n")
+
+        seeds = [
+            {"path": str(claude), "relative_path": "./CLAUDE.md", "type": "root"},
+            {"path": str(local), "relative_path": "./CLAUDE.local.md", "type": "local"},
+        ]
+        discovered = _follow_inclusion_graph(seeds, self.root)
+        self.assertEqual(discovered, [])
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_path_outside_allowlist_is_rejected(self, mock_claude_dir):
+        """References escaping {project root, ~/.claude} are not surfaced.
+
+        Defends against pasted-in [x](/etc/passwd.md) markdown turning the
+        host filesystem into routing targets.
+        """
+        # Point fake claude dir well away from the test's outside_root so
+        # the external file is in neither allowed root.
+        fake_claude = self.root / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        outside_root = Path(tempfile.mkdtemp())
+        try:
+            external = outside_root / "external.md"
+            external.write_text("# External\n")
+
+            claude = self.root / "CLAUDE.md"
+            claude.write_text(f"[X]({external})\n")
+
+            discovered = _follow_inclusion_graph(self._seed(claude), self.root)
+            self.assertEqual(discovered, [])
+        finally:
+            import shutil
+            shutil.rmtree(outside_root, ignore_errors=True)
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_symlink_to_non_md_is_rejected(self, mock_claude_dir):
+        """A `.md` symlink that resolves to a non-md file is rejected.
+
+        Defends against `evil.md → /etc/passwd` patterns where the raw target
+        passes the `.md` check but the resolved file is something else.
+        """
+        if os.name == "nt":
+            self.skipTest("Symlink creation requires admin on Windows")
+
+        fake_claude = self.root / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        # Real non-md file inside the project (so allowlist passes)
+        real = self.root / "secrets.txt"
+        real.write_text("sensitive\n")
+
+        # Symlink with .md extension pointing at the non-md file
+        evil = self.root / "evil.md"
+        try:
+            evil.symlink_to(real)
+        except (OSError, NotImplementedError):
+            self.skipTest("Symlinks not supported in this environment")
+
+        claude = self.root / "CLAUDE.md"
+        claude.write_text("@evil.md\n")
+
+        discovered = _follow_inclusion_graph(self._seed(claude), self.root)
+        self.assertEqual(discovered, [])
+
+    def test_bfs_shortest_path_provenance(self):
+        """When two paths reach the same file, depth + parent reflect the shorter one.
+
+        Setup: A→C (1 hop) and A→B→C (2 hops). C must end up at depth 1
+        with referenced_from=A, not depth 2 via B.
+        """
+        a = self.root / "CLAUDE.md"
+        b = self.root / "B.md"
+        c = self.root / "C.md"
+        # A references both C (direct) and B (which also references C)
+        a.write_text("@C.md\n@B.md\n")
+        b.write_text("@C.md\n")
+        c.write_text("# C\n")
+
+        discovered = _follow_inclusion_graph(self._seed(a), self.root)
+        c_entry = next(d for d in discovered if Path(d["path"]).name == "C.md")
+        self.assertEqual(c_entry["depth"], 1)
+        self.assertEqual(c_entry["referenced_from"], "./CLAUDE.md")
+
+    def test_max_nodes_caps_traversal(self):
+        """max_nodes bounds the total number of newly-discovered files."""
+        a = self.root / "CLAUDE.md"
+        a.write_text("\n".join(f"@f{i}.md" for i in range(10)) + "\n")
+        for i in range(10):
+            (self.root / f"f{i}.md").write_text("# x\n")
+
+        discovered = _follow_inclusion_graph(
+            self._seed(a), self.root, max_nodes=3,
+        )
+        self.assertEqual(len(discovered), 3)
+
+    def test_multiple_links_one_line(self):
+        """Multiple links on a single line are all captured."""
+        a = self.root / "CLAUDE.md"
+        for name in ("a.md", "b.md", "c.md"):
+            (self.root / name).write_text("# x\n")
+        a.write_text("See [A](a.md), [B](b.md), and [C](c.md).\n")
+
+        discovered = _follow_inclusion_graph(self._seed(a), self.root)
+        names = sorted(Path(d["path"]).name for d in discovered)
+        self.assertEqual(names, ["a.md", "b.md", "c.md"])
+
+
+
+class TestFindClaudeFilesWithInclusions(unittest.TestCase):
+    """Tests for find_claude_files() with inclusion graph traversal."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.root = Path(self.temp_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_referenced_files_appear_in_results(self, mock_claude_dir):
+        """Files transitively referenced via @ and md-links are surfaced."""
+        fake_claude = self.root / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        (self.root / "CLAUDE.md").write_text("@AGENTS.md\n[Std](standards.md)\n")
+        (self.root / "AGENTS.md").write_text("- @architecture.md\n")
+        (self.root / "architecture.md").write_text("# Arch\n")
+        (self.root / "standards.md").write_text("# Std\n")
+
+        files = find_claude_files(self.temp_dir)
+        referenced = [f for f in files if f["type"] == "referenced"]
+        names = sorted(Path(f["path"]).name for f in referenced)
+        self.assertEqual(names, ["AGENTS.md", "architecture.md", "standards.md"])
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_follow_includes_can_be_disabled(self, mock_claude_dir):
+        """follow_includes=False returns no referenced files."""
+        fake_claude = self.root / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        (self.root / "CLAUDE.md").write_text("@AGENTS.md\n")
+        (self.root / "AGENTS.md").write_text("# A\n")
+
+        files = find_claude_files(self.temp_dir, follow_includes=False)
+        referenced = [f for f in files if f["type"] == "referenced"]
+        self.assertEqual(referenced, [])
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_referenced_does_not_double_with_seed(self, mock_claude_dir):
+        """A subdirectory CLAUDE.md referenced by root CLAUDE.md isn't duplicated."""
+        fake_claude = self.root / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        (self.root / "CLAUDE.md").write_text("@src/CLAUDE.md\n")
+        sub = self.root / "src"
+        sub.mkdir()
+        (sub / "CLAUDE.md").write_text("# Src\n")
+
+        files = find_claude_files(self.temp_dir)
+        # src/CLAUDE.md should appear once as 'subdirectory', not 'referenced'
+        sub_path = str((sub / "CLAUDE.md").resolve())
+        matching = [f for f in files if Path(f["path"]).resolve() == Path(sub_path)]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["type"], "subdirectory")
+
+    @patch("lib.reflect_utils.get_claude_dir")
+    def test_auto_discovery_still_excludes_node_modules(self, mock_claude_dir):
+        """Auto-discovery exclusion holds even when inclusion follow is on.
+
+        Note: explicit references INTO an excluded dir are still followed
+        (the user wrote them) — that's a deliberate trust boundary. This
+        test only asserts that auto-walking doesn't pull in node_modules.
+        """
+        fake_claude = self.root / "fake_claude"
+        fake_claude.mkdir()
+        mock_claude_dir.return_value = fake_claude
+
+        nm = self.root / "node_modules"
+        nm.mkdir()
+        (nm / "CLAUDE.md").write_text("# Should NOT be discovered\n")
+
+        (self.root / "CLAUDE.md").write_text("# P\n")
+
+        files = find_claude_files(self.temp_dir)
+        self.assertFalse(any("node_modules" in f["path"] for f in files))
 
 if __name__ == "__main__":
     unittest.main()
