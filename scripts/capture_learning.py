@@ -38,6 +38,25 @@ def main() -> int:
     if not prompt:
         return 0
 
+    # Ignore harness-injected pseudo-prompts that aren't actual user input.
+    # Background sub-agent completion blobs, system reminders, slash-command
+    # expansions, and persisted-output dumps all flow through UserPromptSubmit
+    # but are not learnings — they're typically multi-KB and contain English
+    # words ("perfect", "no", "use") that trip the pattern detector. See
+    # CLAUDE.md / MEMORY.md hook-bug note (2026-05-10).
+    _stripped = prompt.lstrip()
+    _IGNORED_PREFIXES = (
+        "<task-notification>",   # sub-agent (Agent tool) completion
+        "<system-reminder>",     # harness-injected reminder
+        "<command-message>",     # /slash-command expansion message
+        "<command-name>",        # /slash-command name marker
+        "<persisted-output>",    # large output dump persisted to file
+        "<user-prompt-submit-hook>",  # hook-output echo
+        "<command-args>",        # /slash-command args marker
+    )
+    if _stripped.startswith(_IGNORED_PREFIXES):
+        return 0
+
     # Initialize queue if doesn't exist
     queue_path = get_queue_path()
     if not queue_path.exists():
