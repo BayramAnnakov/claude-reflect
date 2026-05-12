@@ -618,6 +618,25 @@ CJK_CORRECTION_PATTERNS = [
 # Exception: explicit "remember:" markers are always processed regardless of length.
 MAX_CAPTURE_PROMPT_LENGTH = 500
 
+# Forward-pivot patterns — phrases that indicate the message body is a
+# task instruction following a positive-feedback opener, NOT retrospective
+# feedback. "Perfect! Now let's add X" is structurally a task pivot, not
+# validation of past work. Applied ONLY to positive-pattern matches; real
+# corrections (e.g. "Now let's stop refactoring") still get captured by
+# CORRECTION_PATTERNS since those signals are directive-as-content, not
+# directive-as-followup.
+#
+# Distinct from FALSE_POSITIVE_PATTERNS (which apply to all detections)
+# and NON_CORRECTION_PHRASES (which neutralize correction openers like
+# "no problem"). This list neutralizes positive openers when the message
+# body is a fresh request rather than reflection on past behavior.
+FORWARD_PIVOT_PATTERNS = [
+    r"\b(now|next)[, ]+(let'?s|we|i)\b",        # "Now let's", "Next, we", "Now I"
+    r"\blet'?s (add|do|build|move|update|change|fix|implement)\b",
+    r"\b(go ahead and|can you|could you|please)\b",
+    r"\bwe need to\b",
+]
+
 # Maximum message length for weak patterns (structural heuristic)
 # Long messages are more likely to be context/tasks than corrections
 MAX_WEAK_PATTERN_LENGTH = 150
@@ -638,6 +657,15 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
         sentiment: "correction" or "positive"
         decay_days: Number of days until decay
     """
+    # Slash-command guard — /loop, /reflect, /ia:full-review etc. expand
+    # into long skill bodies that incidentally contain correction tokens
+    # (e.g. "use" + "not" in unrelated text). Slash commands are skill
+    # invocations, never user feedback, so they should never enter the
+    # queue. This is the FIRST check because no downstream pattern
+    # (explicit, positive, correction, guardrail) should fire on them.
+    if text.lstrip().startswith("/"):
+        return (None, "", 0.0, "correction", 90)
+
     # Too short to be actionable (e.g. "OK", "好", "yes")
     # CJK characters carry more meaning per char, so use a lower threshold
     stripped = text.strip()
@@ -675,6 +703,15 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
             matched_positive.append(name)
 
     if matched_positive:
+        # Forward-pivot guard — "Perfect! Now let's add X" matches the
+        # positive pattern but the body is a fresh task instruction, not
+        # retrospective feedback. Reject so we don't pollute the queue
+        # with task pivots (which are never reusable learnings).
+        # Applied ONLY here, not to corrections — "Now let's stop X" is
+        # a legitimate correction even when phrased as a task pivot.
+        for fp_pattern in FORWARD_PIVOT_PATTERNS:
+            if re.search(fp_pattern, text, re.IGNORECASE):
+                return (None, "", 0.0, "correction", 90)
         return ("positive", " ".join(matched_positive), 0.70, "positive", 90)
 
     # Skip long messages for weak patterns (likely task requests)

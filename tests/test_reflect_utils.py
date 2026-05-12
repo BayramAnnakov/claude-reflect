@@ -504,6 +504,115 @@ class TestCJKPatternDetection(unittest.TestCase):
         self.assertEqual(result[0], "guardrail")
 
 
+class TestStructuralRejection(unittest.TestCase):
+    """Tests for the structural rejection guards in detect_patterns —
+    slash-command bodies and forward-pivot phrases that follow positive
+    feedback. These short-circuit pattern detection regardless of which
+    correction / positive / explicit patterns also match.
+    """
+
+    # ── Slash-command guard ──────────────────────────────────────────────
+    # /loop, /reflect, /ia:full-review etc. expand into long skill bodies
+    # that incidentally contain "use", "not", "perfect", etc. They are
+    # skill invocations, never user feedback, so detect_patterns should
+    # short-circuit on a leading "/" before any pattern check.
+
+    def test_slash_command_loop_not_captured(self):
+        """/loop ... bodies must not capture even if they contain 'use'/'not'."""
+        prompt = "/loop Keep polling the build status; use the artifact URL not the run URL when reporting."
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+        self.assertEqual(result[1], "")
+
+    def test_slash_command_ia_full_review_not_captured(self):
+        """/ia:full-review bodies must not capture despite directive verbs."""
+        prompt = "/ia:full-review --deep please run the chain against the latest commit."
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+
+    def test_slash_command_with_leading_whitespace_not_captured(self):
+        """A leading newline/space before / must not bypass the guard."""
+        prompt = "\n  /reflect --dry-run perfect! check whether the queue is clean"
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+
+    def test_slash_command_with_remember_marker_not_captured(self):
+        """Even an explicit 'remember:' inside a slash-command body
+        must NOT capture — slash commands are non-user-feedback by structure.
+        """
+        prompt = "/loop remember: this should not be captured because it's inside a slash-command body"
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+
+    def test_non_slash_messages_still_capture_normally(self):
+        """Regression guard: messages NOT starting with / are unaffected
+        by the slash-command check (sanity that the guard isn't too greedy).
+        """
+        result = detect_patterns("remember: always use bun")
+        self.assertEqual(result[0], "explicit")
+
+    # ── Forward-pivot guard for positive matches ─────────────────────────
+    # "Perfect! Now let's add X" hits POSITIVE_PATTERNS but the body is
+    # a forward-looking task instruction, not retrospective feedback.
+    # The guard rejects ONLY positive matches when a forward-pivot
+    # phrase is also present.
+
+    def test_positive_with_now_lets_pivot_rejected(self):
+        """'Perfect! Now let's add X' is a task pivot — must not capture."""
+        result = detect_patterns(
+            "Perfect! Now let's add the new column to the modal "
+            "right after the title field."
+        )
+        self.assertIsNone(result[0])
+
+    def test_positive_with_lets_implement_pivot_rejected(self):
+        """'Perfect, exactly right! Let's implement that fix' — task pivot."""
+        result = detect_patterns(
+            "perfect! exactly right. Let's implement the partition-pruning fix now."
+        )
+        self.assertIsNone(result[0])
+
+    def test_positive_with_can_you_pivot_rejected(self):
+        """'Perfect! Can you also update X' — request, not retrospective feedback."""
+        result = detect_patterns(
+            "Nailed it! Can you also update the README with the new flags?"
+        )
+        self.assertIsNone(result[0])
+
+    def test_positive_pure_feedback_still_captures(self):
+        """Pure positive feedback (no task pivot) still captures — the
+        guard rejects ONLY positive matches with forward-pivot phrases.
+        Required to prove the guard isn't over-greedy.
+        """
+        result = detect_patterns(
+            "Perfect, that's exactly what I wanted — the GDU projection "
+            "approach was the right call because the simple engine "
+            "doesn't emit V-stages."
+        )
+        self.assertEqual(result[0], "positive")
+        self.assertEqual(result[3], "positive")
+
+    def test_correction_with_pivot_still_captures(self):
+        """Forward-pivot guard is scoped to POSITIVE matches only.
+        'Now let's stop using X' is a correction directive even though
+        it contains a pivot phrase — must still capture as 'auto'.
+        """
+        result = detect_patterns(
+            "Now let's stop using the legacy regex approach; "
+            "use the structural filter instead, not the pattern list."
+        )
+        self.assertEqual(result[0], "auto")
+
+    def test_guardrail_with_pivot_still_captures(self):
+        """Guardrails are checked BEFORE positive — pivot guard doesn't
+        leak into the guardrail branch.
+        """
+        result = detect_patterns(
+            "Now let's stop refactoring unrelated code, please."
+        )
+        self.assertEqual(result[0], "guardrail")
+
+
 class TestQueueItemCreation(unittest.TestCase):
     """Tests for queue item creation."""
 
