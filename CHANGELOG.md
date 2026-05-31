@@ -5,6 +5,12 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Windows: corrections were never captured.** `get_project_folder_name()` left the drive colon in the encoded project folder (e.g. `-C:-Users-bob-app`), which is an illegal Windows directory name. The `learnings-queue.json` / auto-memory `mkdir` raised `WinError 267`, `capture_learning.py` swallowed it and exited 0, so the queue file was never created and no corrections were recorded. The encoder now replaces `:` as well as the path separators, and drops the spurious leading dash, matching Claude Code's own folder names (`C:\Users\bob\app` becomes `C--Users-bob-app`). Added a cross-platform regression test plus an end-to-end hook test.
+- **Windows: hook output crashed on cp1252 consoles.** The emoji in the capture acknowledgement (`📝`) and the session-start reminders (`📚`, `💡`, `⚠️`) raised `UnicodeEncodeError` on Windows' default code page, tripping each hook's top-level handler. Hooks now force UTF-8 stdout/stderr at startup via `ensure_utf8_stdout()`.
+
 ## [3.1.0] - 2026-03-16
 
 ### Added

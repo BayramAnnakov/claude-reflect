@@ -482,5 +482,76 @@ class TestBashPythonOutputEquivalence(unittest.TestCase):
         self.assertEqual(bash_lines, python_lines)
 
 
+class TestCaptureLearningHook(unittest.TestCase):
+    """End-to-end tests for the capture_learning UserPromptSubmit hook.
+
+    Regression coverage for two Windows-specific silent failures that both made
+    the hook exit 0 while dropping the capture:
+      1. A drive colon in the encoded project folder (e.g. ``-C:-Users-...``)
+         made ``mkdir`` raise, so ``learnings-queue.json`` was never written.
+      2. The emoji acknowledgement crashed on cp1252 stdout, tripping the hook's
+         top-level ``except`` handler.
+    Runs on every platform: the queue folder is asserted colon-free, and the
+    hook is asserted not to have raised (which catches the stdout crash on
+    Windows runners).
+    """
+
+    def setUp(self):
+        self.temp_home = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_home, ignore_errors=True)
+
+    def _run_capture(self, prompt: str):
+        env = dict(os.environ)
+        # Point Path.home() at the throwaway dir on every platform
+        # (POSIX reads HOME, Windows reads USERPROFILE).
+        env["HOME"] = self.temp_home
+        env["USERPROFILE"] = self.temp_home
+        # Don't lean on a UTF-8 environment; the hook must be safe on its own.
+        env.pop("PYTHONUTF8", None)
+        env.pop("PYTHONIOENCODING", None)
+        return subprocess.run(
+            [sys.executable, str(PYTHON_SCRIPTS["capture_learning"])],
+            input=json.dumps({"prompt": prompt}),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(SCRIPTS_DIR),
+            env=env,
+        )
+
+    def test_correction_is_captured_to_queue(self):
+        """A correction prompt is persisted; the hook never raises or blocks."""
+        result = self._run_capture("no, use python not python3")
+        # Hook must never block the prompt.
+        self.assertEqual(result.returncode, 0)
+        # The top-level handler only writes this when something threw.
+        self.assertNotIn("capture_learning.py error", result.stderr)
+        # The learning must actually land on disk.
+        queue_files = list(Path(self.temp_home).rglob("learnings-queue.json"))
+        self.assertEqual(
+            len(queue_files), 1, f"expected one queue file, got {queue_files}"
+        )
+        # The encoded project folder must be a legal directory name (no colon).
+        self.assertNotIn(":", queue_files[0].parent.name)
+        items = json.loads(queue_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["message"], "no, use python not python3")
+        self.assertEqual(items[0]["sentiment"], "correction")
+
+    def test_non_correction_is_not_captured(self):
+        """A neutral question is not queued, but the hook still initialises the queue."""
+        result = self._run_capture("what does this function do?")
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("capture_learning.py error", result.stderr)
+        queue_files = list(Path(self.temp_home).rglob("learnings-queue.json"))
+        # Queue file is created (empty) but no learning is appended.
+        self.assertEqual(len(queue_files), 1)
+        items = json.loads(queue_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(items, [])
+
+
 if __name__ == "__main__":
     unittest.main()

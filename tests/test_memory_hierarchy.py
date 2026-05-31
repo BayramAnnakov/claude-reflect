@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from lib.reflect_utils import (
     _parse_rule_frontmatter,
+    _encode_path_to_folder_name,
     find_claude_files,
     suggest_claude_file,
     get_project_folder_name,
@@ -278,11 +279,44 @@ class TestAutoMemoryPath(unittest.TestCase):
         self.assertEqual(result, "-Users-bob-code-projects-myapp")
 
     def test_folder_name_encoding_structure(self):
-        """Test folder name encoding produces valid structure on any platform."""
+        """Test folder name encoding produces a legal directory name on any platform."""
         result = get_project_folder_name(tempfile.gettempdir())
-        self.assertTrue(result.startswith("-"))
+        # The encoded name becomes a single directory component under
+        # ~/.claude/projects/, so it must contain no path separator and no
+        # drive colon. A ':' is an illegal directory name on Windows and made
+        # the capture hook fail silently (WinError 267).
         self.assertNotIn("/", result)
         self.assertNotIn("\\", result)
+        self.assertNotIn(":", result)
+        if platform.system() != "Windows":
+            # POSIX absolute paths start with '/', which encodes to a leading '-'.
+            self.assertTrue(result.startswith("-"))
+
+    def test_folder_name_encoding_windows_drive(self):
+        """Windows drive-letter paths encode with no colon (regression for WinError 267).
+
+        Exercises the pure string encoder directly so this guard runs on every
+        OS (including the Linux/macOS CI runners), not just Windows. The drive
+        colon must become a dash, matching Claude Code's own project folders
+        (C:\\Users\\bob\\myapp -> C--Users-bob-myapp), so mkdir on the queue /
+        auto-memory directory cannot raise and silently drop captures.
+        """
+        result = _encode_path_to_folder_name(r"C:\Users\bob\myapp")
+        self.assertEqual(result, "C--Users-bob-myapp")
+        self.assertNotIn(":", result)
+        self.assertNotIn("\\", result)
+        # No spurious leading dash for drive-letter paths.
+        self.assertFalse(result.startswith("-"))
+
+    def test_folder_name_encoding_posix_via_encoder(self):
+        """POSIX paths keep their natural leading dash through the pure encoder."""
+        self.assertEqual(
+            _encode_path_to_folder_name("/Users/bob/myapp"), "-Users-bob-myapp"
+        )
+        self.assertEqual(
+            _encode_path_to_folder_name("/Users/bob/code/projects/myapp"),
+            "-Users-bob-code-projects-myapp",
+        )
 
     @unittest.skipIf(platform.system() == "Windows", "Unix-specific path encoding")
     @patch("lib.reflect_utils.get_claude_dir")

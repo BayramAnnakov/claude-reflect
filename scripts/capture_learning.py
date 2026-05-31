@@ -19,12 +19,16 @@ from lib.reflect_utils import (
     detect_patterns,
     create_queue_item,
     should_include_message,
+    ensure_utf8_stdout,
     MAX_CAPTURE_PROMPT_LENGTH,
 )
 
 
 def main() -> int:
     """Main entry point."""
+    # Make output UTF-8 so the emoji acknowledgement can't crash on Windows cp1252.
+    ensure_utf8_stdout()
+
     # Read JSON from stdin
     input_data = sys.stdin.read()
     if not input_data:
