@@ -6,6 +6,7 @@ Cross-platform compatible (Windows, macOS, Linux).
 import json
 import re
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
@@ -341,16 +342,35 @@ def suggest_claude_file(
 # Auto memory utilities
 # =============================================================================
 
+def _encode_path_to_folder_name(path_str: str) -> str:
+    """Encode an absolute path string the way Claude Code names project folders.
+
+    Every path separator AND the Windows drive colon are replaced with a single
+    dash, so the result is always a single legal directory-name component on
+    every platform::
+
+        /Users/bob/myapp        ->  -Users-bob-myapp
+        C:\\Users\\bob\\myapp   ->  C--Users-bob-myapp
+
+    The colon MUST be replaced: a directory name containing ':' is illegal on
+    Windows (raises WinError 267/123 on mkdir), which previously made the
+    learnings-queue / auto-memory writes throw and the capture hook fail
+    silently. We deliberately do NOT re-prepend a leading dash: on POSIX the
+    leading '/' already encodes to '-', and on Windows a drive-letter path
+    correctly has none, matching Claude Code's own folder names under
+    ~/.claude/projects/ (e.g. C--Users-bob-myapp, not -C--Users-bob-myapp).
+    """
+    return re.sub(r"[\\/:]", "-", path_str)
+
+
 def get_project_folder_name(project_dir: Optional[str] = None) -> str:
     """Encode a project directory path using Claude Code's folder naming convention.
 
-    /Users/bob/myapp → -Users-bob-myapp
+    /Users/bob/myapp        ->  -Users-bob-myapp
+    C:\\Users\\bob\\myapp   ->  C--Users-bob-myapp
     """
     project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
-    folder_name = str(project_path).replace("/", "-").replace("\\", "-")
-    if folder_name.startswith("-"):
-        folder_name = folder_name[1:]
-    return "-" + folder_name
+    return _encode_path_to_folder_name(str(project_path))
 
 
 def get_auto_memory_path(project_dir: Optional[str] = None) -> Path:
@@ -1171,3 +1191,28 @@ def aggregate_tool_errors(
     aggregated.sort(key=lambda x: x["count"], reverse=True)
 
     return aggregated
+
+
+# =============================================================================
+# Output utilities
+# =============================================================================
+
+def ensure_utf8_stdout() -> None:
+    """Force stdout/stderr to UTF-8 so hook output can't crash on Windows.
+
+    Windows consoles default to cp1252, which cannot encode the emoji used in
+    hook messages (e.g. 📝, 📚, 💡, ⚠️). Printing one raises UnicodeEncodeError,
+    which trips a hook's top-level ``except`` handler, discarding the
+    acknowledgement and writing a spurious "error" line to stderr on every
+    correction. Hooks call this once at startup so their stdout is portable.
+    No-ops safely when the stream can't be reconfigured (already wrapped,
+    detached, or replaced, e.g. under a test harness).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
