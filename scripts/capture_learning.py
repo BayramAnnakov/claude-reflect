@@ -57,6 +57,18 @@ def main() -> int:
     if _stripped.startswith(_IGNORED_PREFIXES):
         return 0
 
+    # Some harness events prepend a banner (e.g. "[SYSTEM NOTIFICATION - NOT
+    # USER INPUT]") before the actual <task-notification>/<system-reminder>
+    # block, so a prefix match alone misses them. Skip on the marker anywhere.
+    _IGNORED_MARKERS = (
+        "<task-notification>",
+        "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+        "[from automated background-task event",
+        "This is an automated background-task event",
+    )
+    if any(_marker in prompt for _marker in _IGNORED_MARKERS):
+        return 0
+
     # Initialize queue if doesn't exist
     queue_path = get_queue_path()
     if not queue_path.exists():
