@@ -4,7 +4,7 @@ allowed-tools: Bash
 ---
 
 ## Context
-- Queue count: !`python3 scripts/read_queue.py 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0`
+- Queue count: !`python3 "${CLAUDE_SKILL_DIR}/../scripts/read_queue.py" 2>/dev/null | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0`
 
 ## Your Task
 
@@ -21,8 +21,8 @@ allowed-tools: Bash
    - Clear the project queue:
    ```bash
    python3 -c "
-   import sys, os
-   sys.path.insert(0, os.path.join(os.environ.get('CLAUDE_PLUGIN_ROOT', '.'), 'scripts'))
+   import sys
+   sys.path.insert(0, '${CLAUDE_SKILL_DIR}/../scripts')
    from lib.reflect_utils import save_queue
    save_queue([])
    "

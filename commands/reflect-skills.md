@@ -98,7 +98,7 @@ find "$SESSION_PATH" -name "*.jsonl" -mtime -14 -type f 2>/dev/null
 
 ```bash
 # Use the plugin's extraction script - DO NOT reinvent with bash/jq
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/extract_session_learnings.py" "$SESSION_FILE"
+python3 "${CLAUDE_SKILL_DIR}/../scripts/extract_session_learnings.py" "$SESSION_FILE"
 ```
 
 The extraction script handles:
