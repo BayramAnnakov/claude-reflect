@@ -76,7 +76,9 @@ def main() -> int:
         # Output feedback for Claude to acknowledge the capture
         # UserPromptSubmit hooks with exit code 0 add stdout as context
         preview = prompt[:40] + "..." if len(prompt) > 40 else prompt
-        print(f"📝 Learning captured: '{preview}' (confidence: {confidence:.0%})")
+        # Plain ASCII: Windows consoles default to cp1252 and raise
+        # UnicodeEncodeError on emoji, which swallowed this confirmation.
+        print(f"[reflect] Learning captured: '{preview}' (confidence: {confidence:.0%})")
 
     return 0
 
