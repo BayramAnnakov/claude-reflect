@@ -458,7 +458,16 @@ POSITIVE_PATTERNS = [
 # - Users can use explicit markers like "remember:" in any language
 #
 CORRECTION_PATTERNS = [
-    (r"^no[,. ]+", "no,", True),  # Starts with "no," - common correction opener
+    (r"^no[,.]+", "no,", True),  # Starts with "no," / "no." - correction opener
+    # Bare "no " needs an addressee or clause marker after it, otherwise plain
+    # statements of fact ("no dialog appeared", "no idea", "no problem") match.
+    (
+        r"^no\s+(?:it|its|it's|that|this|these|those|i|i'm|you|you're|we|we're|they|he|she"
+        r"|do|don'?t|doesn'?t|didn'?t|not|use|using|need|keep|make|put|let'?s"
+        r"|bro|man|mate|dude|sorry|wait|the\s+other|the\s+first|the\s+second)\b",
+        "no-addressed",
+        True,
+    ),
     (r"^don't\b|^do not\b", "don't", True),  # Starts with don't/do not
     (r"^stop\b|^never\b", "stop/never", True),  # Starts with stop/never
     (r"that's (wrong|incorrect)|that is (wrong|incorrect)", "that's-wrong", True),
@@ -506,6 +515,12 @@ MAX_WEAK_PATTERN_LENGTH = 150
 # Very short messages without question marks are more likely corrections
 MIN_SHORT_CORRECTION_LENGTH = 80
 
+# Minimum length for a positive to be worth queueing.
+# Bare praise ("i love it", "perfect!", "nailed it") has no referent — by the
+# time /reflect runs, there is no way to tell what was being praised, so it
+# cannot become a memory. Longer positives usually name the thing.
+MIN_POSITIVE_CONTEXT_LENGTH = 25
+
 
 def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
     """
@@ -542,6 +557,10 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
             matched_positive.append(name)
 
     if matched_positive:
+        # Bare praise carries no referent — drop it rather than queue an
+        # item that /reflect cannot turn into anything.
+        if len(text.strip()) < MIN_POSITIVE_CONTEXT_LENGTH:
+            return (None, "", 0.0, "positive", 90)
         return ("positive", " ".join(matched_positive), 0.70, "positive", 90)
 
     # Skip long messages for weak patterns (likely task requests)
