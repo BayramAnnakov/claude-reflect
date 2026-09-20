@@ -989,7 +989,8 @@ class TestProjectPathEncoding(unittest.TestCase):
         capture failure this module exists to prevent.
         """
         path = os.fsdecode(b"/Users/bob/caf\xe9dir")
-        self.assertIn("\udce9", path)
+        if "\udce9" not in path:
+            self.skipTest("filesystem encoding does not surrogate-escape here")
         self.assertEqual(_encode_project_path(path), "-Users-bob-caf-dir")
 
     def test_case_is_preserved(self):
@@ -1029,10 +1030,18 @@ class TestLongFolderNameResolution(unittest.TestCase):
         self.encoded = "-" + ("a" * 260)   # 261 chars, over the 200 cap
 
     def test_short_names_never_reach_the_resolver(self):
-        """The common case must not pay for the long-path fallback."""
-        self.assertEqual(get_project_folder_name("/Users/bob/myapp"), "-Users-bob-myapp")
+        """The common case must not pay for the long-path fallback.
+
+        Asserts behaviour, not a literal name: resolve() prepends a drive
+        letter on Windows, and an assertion on "-Users-bob-myapp" would
+        simply be skipped there -- which is how the encoder bug survived on
+        the one platform where it crashed.
+        """
+        short = str(Path("/Users/bob/myapp").resolve())
+        self.assertLessEqual(len(_encode_project_path(short)), MAX_PROJECT_FOLDER_NAME_LEN)
         with patch("lib.reflect_utils._resolve_long_folder_name") as resolver:
-            get_project_folder_name("/Users/bob/myapp")
+            self.assertEqual(get_project_folder_name("/Users/bob/myapp"),
+                             _encode_project_path(short))
             resolver.assert_not_called()
 
     def test_get_project_folder_name_uses_the_resolution(self):
