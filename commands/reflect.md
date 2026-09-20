@@ -17,7 +17,7 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 ## Context
 - Project CLAUDE.md: @CLAUDE.md
 - Global CLAUDE.md: @~/.claude/CLAUDE.md
-- Learnings queue (per-project): !`python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/read_queue.py" 2>/dev/null || echo "[]"`
+- Learnings queue (per-project): !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py" 2>/dev/null || echo "[]"`
 - Current project: !`pwd`
 
 ## Multi-Target Export
@@ -694,7 +694,7 @@ Tool execution errors (`is_error: true`) that indicate project-specific issues:
 
 **Use the extraction script:**
 ```bash
-python scripts/extract_tool_errors.py --project "$(pwd)" --min-count 2 --json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/extract_tool_errors.py" --project "$(pwd)" --min-count 2 --json
 ```
 
 Or use the utility functions directly:
