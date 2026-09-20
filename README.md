@@ -150,6 +150,7 @@ Approved learnings are synced to:
 - `./**/CLAUDE.md` (subdirectories - auto-discovered)
 - `./.claude/commands/*.md` (skill files - when correction relates to a skill)
 - `AGENTS.md` (if exists - works with Codex, Cursor, Aider, Jules, Zed, Factory)
+- Docs reachable from the above via `@filename` includes or markdown links (bounded depth, cycles handled, code blocks/external URLs skipped) — useful when CLAUDE.md delegates guidance to `standards.md`, `architecture.md`, etc.
 
 Run `/reflect --targets` to see which files will be updated.
 

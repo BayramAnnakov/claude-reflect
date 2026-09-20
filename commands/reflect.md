@@ -34,6 +34,7 @@ Claude-reflect syncs learnings to CLAUDE.md files (including subdirectories), sk
 | **Subdirectory CLAUDE.md** | `./**/CLAUDE.md` | Markdown | Auto-discovered |
 | **Project Rules** | `./.claude/rules/*.md` | Markdown | Modular rules, optional path-scoping |
 | **User Rules** | `~/.claude/rules/*.md` | Markdown | Global modular rules |
+| **Referenced Docs** | docs reachable via `@` or markdown links | Markdown | Bounded inclusion-graph traversal from memory files |
 | **Skill Files** | `./commands/*.md` | Markdown | When correction relates to skill |
 | **Auto Memory** | `~/.claude/projects/<project>/memory/*.md` | Markdown | Low-confidence, exploratory learnings |
 | **AGENTS.md** | `./AGENTS.md` | Markdown | Industry standard (Codex, Cursor, Aider, Jules, Zed, Factory) |
@@ -45,7 +46,9 @@ Use the Python utility to find all memory tier files:
 from scripts.lib.reflect_utils import find_claude_files
 files = find_claude_files()
 # Returns list of {path, relative_path, type, frontmatter}
-# Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule'
+# Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule', 'referenced'
+# 'referenced' files are docs reachable from memory files via @-includes or
+# markdown links; they include 'referenced_from' and 'depth' fields.
 ```
 
 Or discover manually:
@@ -70,6 +73,7 @@ ls ~/.claude/rules/*.md 2>/dev/null
 - **Personal/local** (machine-specific, not for team) → `./CLAUDE.local.md`
 - **Low-confidence** (0.60-0.74) → auto memory for later promotion
 - **Project-specific** → `./CLAUDE.md` or subdirectory file
+- **Topic-aligned referenced docs** (e.g. `standards.md`, `architecture.md` reached via `@` or markdown links from CLAUDE.md / AGENTS.md) → that doc, when the learning matches its topic
 - Let users override routing with AI reasoning
 
 **Note on Confidence & Decay:**
@@ -181,6 +185,10 @@ Rule Files:
   ./.claude/rules/guardrails.md          8 lines  ✓
   ./.claude/rules/coding-style.md       15 lines  ✓  [paths: src/]
   ~/.claude/rules/model-preferences.md  10 lines  ✓
+
+Referenced Docs (via @ / markdown links):
+  ./docs/standards.md                    ← from ./CLAUDE.md            (depth 1)
+  ./docs/architecture.md                 ← from ./docs/standards.md    (depth 2)
 
 Auto Memory:
   ~/.claude/projects/.../memory/         3 files (general.md, tool-usage.md, workflow.md)
