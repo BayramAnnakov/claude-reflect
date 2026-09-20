@@ -1230,5 +1230,37 @@ class TestLegacyFolderMigration(unittest.TestCase):
 
 
 
+
+class TestInclusionParserHardening(unittest.TestCase):
+    """Resource findings from the review gate, pinned so they cannot return."""
+
+    def test_unmatched_brackets_do_not_backtrack(self):
+        """codex measured 2.0s for 80k '[' through the old regex; ~1ms now."""
+        import time
+        from lib.reflect_utils import _parse_inclusions
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "CLAUDE.md"
+            f.write_text("[" * 80000, encoding="utf-8")
+            start = time.perf_counter()
+            _parse_inclusions(f)
+            self.assertLess(time.perf_counter() - start, 1.0)
+
+    def test_normal_links_still_parse(self):
+        from lib.reflect_utils import _parse_inclusions
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "CLAUDE.md"
+            f.write_text('[Standards](./docs/standards.md) and [x](a.md "t")\n',
+                         encoding="utf-8")
+            self.assertEqual(_parse_inclusions(f), ["./docs/standards.md", "a.md"])
+
+    def test_memory_reads_are_size_capped(self):
+        """A discovered doc must not be read unbounded after the parser's cap."""
+        from lib.reflect_utils import _read_text_capped
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "big.md"
+            f.write_bytes(b"x" * 5000)
+            self.assertEqual(len(_read_text_capped(f, limit=1000)), 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

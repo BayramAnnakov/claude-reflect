@@ -113,3 +113,56 @@ risk. Every capture came from implicit detection.
 **Why it matters:** the highest-precision input we have is invisible to users.
 Worth one line in `SessionStart` output or the README before investing further
 in implicit detection.
+
+---
+
+## 6. Findings from the 2026-09-19 review gate that were NOT fixed
+
+codex (GPT-6) and Grok 4.6 reviewed the v3.2.0 change independently. The ship
+blockers are fixed; these are real, verified, and deliberately left.
+
+**Concurrent captures can still drop one.** `load_queue` → append →
+`save_queue` has no lock, so two Claude Code sessions in the same project can
+each read, append and write, and the second overwrites the first. Writes are
+now atomic (no torn file), but the read-modify-write race predates this change
+and is not closed. Fixing it needs a lockfile or an append-only journal.
+*Cost of leaving it:* a lost learning, silently, only when two sessions in one
+project capture within the same instant.
+
+**`~/.claude` is inside the inclusion-graph allowlist.** A cloned repo's
+`CLAUDE.md` can write `@~/.claude/projects/<other-project>/memory/general.md`
+and `/reflect` will offer that file as a write target. The tests call this a
+deliberate trust boundary, but the trusting party is whoever cloned the repo.
+*Cost of leaving it:* a hostile repo can steer a learning into another
+project's memory. Needs a decision on whether `~/.claude` belongs in the
+allowlist at all.
+
+**No timeout on inclusion reads.** `Path.resolve()`, `is_file()` and `open()`
+have no deadline, so a FIFO named `notes.md` or a link to an unreachable UNC
+share can hang `/reflect`. Claude Code itself had to special-case FIFOs.
+*Cost of leaving it:* `/reflect` hangs with no message, in a repo the user
+did not write.
+
+**`max_nodes` counts successes, not attempts.** codex measured 5,000 path
+resolutions with `max_nodes=1` when references are repeatedly missing.
+*Cost of leaving it:* a slow `/reflect` on a pathological repo; bounded, not
+unbounded.
+
+**`_EXTERNAL_SCHEME_RE` treats `C:/Users/...` as a URL scheme**, so Windows
+absolute markdown links are silently skipped.
+
+**Standalone `AGENTS.md` is not an inclusion-graph seed** (codex #12).
+
+**`ensure_utf8_io` has no test and does not set `errors="replace"`.** It is a
+no-op on Python 3.6, which the README still claims to support. The capture
+confirmation is ASCII now, but `session_start_reminder.py` still prints
+`⚠️ 📚 💡`.
+*Cost of leaving it:* the function can be gutted and CI stays green.
+
+**Two projects whose paths differ only by a character that encodes to a dash
+share one folder** — see entry 4. Real on this machine today:
+`-Users-bayramannakov-GH-darwin_new` (plugin-only) will migrate into
+`-Users-bayramannakov-GH-darwin-new` (128+ session files) on the next
+`load_queue()` there. That is the intended, Claude-Code-matching behaviour,
+but `/reflect` should warn when one queue holds items from several project
+paths.

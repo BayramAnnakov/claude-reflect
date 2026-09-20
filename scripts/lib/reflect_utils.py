@@ -318,7 +318,7 @@ _INCLUDE_RE = re.compile(r"(?<![\w.])@([\w./\-_~]+\.md)\b")
 
 # Inline markdown link: [text](target). Captures the target path.
 # Reference-style ([text][ref]) is intentionally not handled.
-_MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_MD_LINK_RE = re.compile(r"\[[^\]\[]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 # Fenced code block delimiters: ``` or ~~~ (any indentation, any info string).
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
@@ -961,6 +961,21 @@ def get_auto_memory_path(project_dir: Optional[str] = None) -> Path:
     return get_claude_dir() / "projects" / folder_name / "memory"
 
 
+
+def _read_text_capped(path: Path, limit: int = MAX_INCLUSION_FILE_BYTES) -> Optional[str]:
+    """Read at most `limit` bytes of a memory file.
+
+    The inclusion parser caps its own reads, but the files it discovers were
+    then read in full downstream, so one `@huge.md` could exhaust memory
+    after passing every published limit. Returns None on any read error.
+    """
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except (IOError, OSError):
+        return None
+
+
 def read_auto_memory(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
     """Read all .md files from the project's auto memory directory.
 
@@ -974,7 +989,9 @@ def read_auto_memory(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
 
     for md_file in sorted(memory_path.glob("*.md")):
         try:
-            text = md_file.read_text(encoding="utf-8")
+            text = _read_text_capped(md_file)
+            if text is None:
+                continue
             entries = [line.strip() for line in text.splitlines() if line.strip()]
             results.append({
                 "file": str(md_file),
@@ -1033,9 +1050,8 @@ def read_all_memory_entries(
         filepath = Path(cf["path"])
         if cf["type"] == "global":
             filepath = Path(cf["path"])
-        try:
-            text = filepath.read_text(encoding="utf-8")
-        except (IOError, OSError):
+        text = _read_text_capped(filepath)
+        if text is None:
             continue
 
         for line_num, line in enumerate(text.splitlines(), start=1):
