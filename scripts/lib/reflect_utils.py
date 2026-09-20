@@ -6,9 +6,44 @@ Cross-platform compatible (Windows, macOS, Linux).
 import json
 import re
 import os
+import sys
+import unicodedata
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
+
+# =============================================================================
+# Hook I/O encoding
+# =============================================================================
+
+def ensure_utf8_io() -> None:
+    """Force stdin/stdout/stderr to UTF-8 so hooks work on a Windows console.
+
+    Windows defaults these streams to the locale codepage (cp1252, cp1251...).
+    Two failures follow, both silent to the user:
+
+    * Reading a non-ASCII prompt off stdin mangles it, so the *stored* learning
+      is mojibake even though capture "succeeded".
+    * Printing the acknowledgement raises ``UnicodeEncodeError`` on any emoji,
+      which trips each hook's top-level ``except`` and replaces the
+      confirmation with a stderr warning on every single capture.
+
+    No-ops where a stream cannot be reconfigured -- already wrapped, detached,
+    or replaced by a test harness.
+
+    Credit: stdout/stderr half from #38 (@keitaemsden-lab), stdin half
+    reported in #41 (@George-tmm).
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError, AttributeError):
+            pass
+
 
 # =============================================================================
 # Path utilities
@@ -28,6 +63,71 @@ def get_queue_path(project_dir: Optional[str] = None) -> Path:
     except Exception:
         # Fallback to global path if encoding fails
         return Path.home() / ".claude" / "learnings-queue.json"
+
+
+def project_dir_from_transcript(transcript_path: Optional[str]) -> Optional[Path]:
+    """The project folder Claude Code is using, taken from the hook payload.
+
+    Every hook payload carries ``transcript_path``, and the transcript lives
+    at ``~/.claude/projects/<folder>/<session>.jsonl``. Its parent directory
+    is therefore the folder Claude Code itself chose -- authoritative, with
+    nothing to reproduce.
+
+    This matters because the encoding is not simple: every non-alphanumeric
+    character becomes a dash, the substitution counts UTF-16 code units so an
+    emoji becomes two dashes, and a name over 200 characters is truncated and
+    given a hash we cannot recompute. Reading the answer beats deriving it.
+
+    Returns None when the field is missing or does not sit under
+    ``<claude dir>/projects/``, so the caller falls back to the encoder.
+    """
+    if not transcript_path:
+        return None
+    try:
+        parent = Path(transcript_path).expanduser().parent
+        if parent.parent.name != "projects":
+            return None
+        if not parent.name:
+            return None
+    except (OSError, ValueError):
+        return None
+    return parent
+
+
+def queue_path_for_folder(project_folder: Path) -> Path:
+    """Queue file inside an already-resolved project folder."""
+    return project_folder / "learnings-queue.json"
+
+
+def load_queue_at(path: Path) -> List[Dict[str, Any]]:
+    """Read a queue from an explicit path. No migration, no encoding."""
+    if not path.exists():
+        return []
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, list) else []
+    except (ValueError, IOError, OSError):
+        return []
+
+
+def save_queue_at(path: Path, items: List[Dict[str, Any]]) -> None:
+    """Write a queue to an explicit path, atomically.
+
+    A plain write_text truncates first, so a crash or a concurrent reader
+    between truncate and write sees an empty or half-written file -- which
+    the loaders treat as "no learnings" and the migration used to treat as
+    "safe to delete".
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def get_global_queue_path() -> Path:
@@ -52,7 +152,7 @@ def migrate_global_queue() -> None:
 
     try:
         items = json.loads(global_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError):
+    except (ValueError, IOError):
         return
 
     if not items:
@@ -81,7 +181,7 @@ def migrate_global_queue() -> None:
                     existing = json.loads(
                         project_queue_path.read_text(encoding="utf-8")
                     )
-                except (json.JSONDecodeError, IOError):
+                except (ValueError, IOError):
                     existing = []
             existing.extend(project_items)
             project_queue_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +213,7 @@ def get_cleanup_period_days() -> Optional[int]:
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         return settings.get("cleanupPeriodDays")
-    except (json.JSONDecodeError, IOError):
+    except (ValueError, IOError):
         return None
 
 
@@ -187,17 +287,284 @@ def _parse_rule_frontmatter(filepath: Path) -> Optional[Dict[str, Any]]:
     return result if result else None
 
 
-def find_claude_files(root_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+# =============================================================================
+# Inclusion graph traversal
+# =============================================================================
+#
+# Memory files (CLAUDE.md, AGENTS.md, rule files) often delegate guidance to
+# other docs via:
+#   - @filename            Claude Code's native include syntax
+#   - [text](relative.md)  standard markdown links
+#
+# These transitively-referenced docs are part of the project's de-facto AI
+# memory and should be reachable as routing targets in /reflect. The traversal
+# is bounded (depth cap + cycle detection) and skips fenced code blocks,
+# external URLs, and same-file anchors.
+
+# Default depth cap: 0 = seeds only, 1 = direct references, ...
+# 3 hops covers the typical CLAUDE.md → AGENTS.md → standards.md → details.md
+# chain. Real-world docs rarely delegate further.
+DEFAULT_INCLUSION_DEPTH = 3
+
+# Soft cap on total nodes discovered by inclusion-graph BFS, across all seeds.
+# Prevents pathological fanout from exhausting memory on a misconfigured tree.
+DEFAULT_INCLUSION_MAX_NODES = 200
+
+# Cap on bytes read from any single memory file when extracting inclusions.
+MAX_INCLUSION_FILE_BYTES = 1 * 1024 * 1024
+
+# @-include syntax: @path.md, @./path.md, @~/.claude/CLAUDE.md
+# Lookbehind prevents matching email addresses (foo@bar.md).
+_INCLUDE_RE = re.compile(r"(?<![\w.])@([\w./\-_~]+\.md)\b")
+
+# Inline markdown link: [text](target). Captures the target path.
+# Reference-style ([text][ref]) is intentionally not handled.
+_MD_LINK_RE = re.compile(r"\[[^\]\[]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+# Fenced code block delimiters: ``` or ~~~ (any indentation, any info string).
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+
+# External URL schemes — never followed.
+_EXTERNAL_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*:", re.IGNORECASE)
+
+
+def _parse_inclusions(filepath: Path) -> List[str]:
+    """Extract @-include and inline markdown link targets from a memory file.
+
+    Skips fenced code blocks, external URLs, and same-file anchors.
+    Strips in-page anchors (foo.md#section → foo.md). Reads are capped
+    at MAX_INCLUSION_FILE_BYTES; returns [] on any read error.
+
+    Returns:
+        Raw target strings in document order.
+    """
+    try:
+        with open(filepath, "rb") as fh:
+            blob = fh.read(MAX_INCLUSION_FILE_BYTES)
+    except (IOError, OSError):
+        return []
+    text = blob.decode("utf-8", errors="replace")
+
+    refs: List[str] = []
+    in_fence = False
+
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        for match in _INCLUDE_RE.finditer(line):
+            refs.append(match.group(1))
+
+        for match in _MD_LINK_RE.finditer(line):
+            target = match.group(1).strip()
+            if not target or target.startswith("#"):
+                continue
+            if _EXTERNAL_SCHEME_RE.match(target):
+                continue
+            if "#" in target:
+                target = target.split("#", 1)[0]
+            if target:
+                refs.append(target)
+
+    return refs
+
+
+def _resolve_inclusion(
+    target: str,
+    source_file: Path,
+    allowed_roots: Optional[List[Path]] = None,
+) -> Optional[Path]:
+    """Resolve a raw inclusion target to an absolute, existing .md file.
+
+    Handles ~ expansion, absolute paths, and paths relative to source_file's
+    directory. Restricts to .md files — checked on both the raw target and
+    the resolved suffix, so a `foo.md` symlink to /etc/passwd is rejected.
+
+    Confines the resolved path to `allowed_roots` when provided (typically
+    the project root plus ~/.claude/). When `allowed_roots` is None, no
+    containment check is applied — used by tests in isolation.
+
+    Returns the resolved Path, or None if any check fails.
+    """
+    if not target.endswith(".md"):
+        return None
+
+    raw = target.replace("\\", "/")  # Tolerate Windows-style separators in links
+
+    try:
+        if raw.startswith("~"):
+            candidate = Path(raw).expanduser()
+        elif Path(raw).is_absolute():
+            candidate = Path(raw)
+        else:
+            candidate = source_file.parent / raw
+        resolved = candidate.resolve()
+    except (OSError, ValueError):
+        return None
+
+    if resolved.suffix.lower() != ".md":
+        return None
+
+    try:
+        if not resolved.is_file():
+            return None
+    except OSError:
+        return None
+
+    if allowed_roots is not None:
+        for ancestor in allowed_roots:
+            try:
+                resolved.relative_to(ancestor)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+
+    return resolved
+
+
+def _format_relative_path(path: Path, root: Path) -> str:
+    """Format a path for display: project-relative, then home-relative, then absolute.
+
+    Both inputs are resolved to canonical form so symlinks (notably macOS's
+    /tmp → /private/tmp) don't break the relative_to() comparison. The
+    home-relative branch handles inclusions reached from the global
+    ~/.claude/CLAUDE.md (e.g., user-rules referenced by @ from there).
+    """
+    try:
+        canonical = path.resolve()
+    except OSError:
+        canonical = path
+    try:
+        canonical_root = root.resolve()
+    except OSError:
+        canonical_root = root
+
+    try:
+        rel = canonical.relative_to(canonical_root)
+        return f"./{rel.as_posix()}"
+    except ValueError:
+        pass
+    try:
+        rel = canonical.relative_to(Path.home().resolve())
+        return f"~/{rel.as_posix()}"
+    except (OSError, ValueError):
+        return canonical.as_posix()
+
+
+def _follow_inclusion_graph(
+    seed_files: List[Dict[str, Any]],
+    root: Path,
+    max_depth: int = DEFAULT_INCLUSION_DEPTH,
+    max_nodes: int = DEFAULT_INCLUSION_MAX_NODES,
+) -> List[Dict[str, Any]]:
+    """BFS over @-includes and markdown links from seed memory files.
+
+    Each newly discovered file is reported once with the immediate-parent
+    provenance. FIFO dequeue order means depth N is fully drained before
+    depth N+1, so reported `depth`/`referenced_from` reflect a shortest
+    path from the seed set.
+
+    Args:
+        seed_files: Result entries from the regular discovery pass. Each
+            must have a "path" key.
+        root: Project root. Inclusions confine to {root, get_claude_dir()}
+            so out-of-allowlist references (e.g. /etc/passwd.md) are rejected.
+        max_depth: Maximum hops from any seed (>=0). 0 disables traversal.
+        max_nodes: Cap on total newly-discovered files.
+
+    Returns:
+        List of dicts for newly discovered referenced docs (excluding seeds):
+            {path, relative_path, type='referenced', referenced_from, depth}
+    """
+    if max_depth <= 0 or not seed_files:
+        return []
+
+    try:
+        canonical_root = root.resolve()
+    except OSError:
+        canonical_root = root
+    try:
+        canonical_claude = get_claude_dir().resolve()
+    except OSError:
+        canonical_claude = get_claude_dir()
+    allowed_roots: List[Path] = [canonical_root, canonical_claude]
+
+    seen: set = set()
+    queue: "deque[Tuple[Path, int]]" = deque()
+    for f in seed_files:
+        try:
+            resolved = Path(f["path"]).resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        queue.append((resolved, 0))
+    seed_paths = set(seen)
+
+    discovered: List[Dict[str, Any]] = []
+
+    while queue:
+        current, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        if len(discovered) >= max_nodes:
+            break
+
+        formatted_current = _format_relative_path(current, root)
+
+        for raw_target in _parse_inclusions(current):
+            resolved = _resolve_inclusion(raw_target, current, allowed_roots)
+            if resolved is None or resolved in seen:
+                continue
+            seen.add(resolved)
+
+            if resolved in seed_paths:
+                continue
+
+            discovered.append({
+                "path": str(resolved),
+                "relative_path": _format_relative_path(resolved, root),
+                "type": "referenced",
+                "referenced_from": formatted_current,
+                "depth": depth + 1,
+            })
+            if len(discovered) >= max_nodes:
+                break
+            queue.append((resolved, depth + 1))
+
+    return discovered
+
+
+def find_claude_files(
+    root_dir: Optional[str] = None,
+    follow_includes: bool = True,
+    max_depth: int = DEFAULT_INCLUSION_DEPTH,
+    max_nodes: int = DEFAULT_INCLUSION_MAX_NODES,
+) -> List[Dict[str, Any]]:
     """
     Find all memory tier files in the project tree.
 
     Args:
-        root_dir: Root directory to search from (defaults to cwd)
+        root_dir: Root directory to search from (defaults to cwd).
+        follow_includes: If True (default), also surface .md docs that the
+            discovered memory files transitively reference via @-includes
+            or markdown links. Bounded by max_depth and cycle-safe; resolved
+            paths are confined to root_dir and ~/.claude/.
+        max_depth: Maximum hops to follow from any seed memory file when
+            follow_includes is True. Set to 0 to disable traversal.
+        max_nodes: Cap on total newly-discovered referenced files.
 
     Returns:
         List of dicts with {path, relative_path, type, ...} for each file found.
-        Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule'.
-        Rule files include a 'frontmatter' field with parsed YAML frontmatter.
+        Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule',
+        'referenced'. Rule files include a 'frontmatter' field. Referenced
+        files include 'referenced_from' and 'depth' fields.
     """
     root = Path(root_dir) if root_dir else Path.cwd()
     results = []
@@ -273,6 +640,12 @@ def find_claude_files(root_dir: Optional[str] = None) -> List[Dict[str, Any]]:
                 "frontmatter": frontmatter,
             })
 
+    # Follow inclusion graph to surface transitively referenced .md docs
+    if follow_includes:
+        results.extend(_follow_inclusion_graph(
+            results, root, max_depth=max_depth, max_nodes=max_nodes,
+        ))
+
     return results
 
 
@@ -341,16 +714,303 @@ def suggest_claude_file(
 # Auto memory utilities
 # =============================================================================
 
+def _encode_project_path(path_str: str) -> str:
+    """Encode an absolute path the way Claude Code names its project folders.
+
+    Every character that is not an ASCII letter or digit becomes one dash::
+
+        /Users/bob/myapp       ->  -Users-bob-myapp
+        /Users/bob/my_app      ->  -Users-bob-my-app
+        /tmp/b2hook.ApyRBN     ->  -tmp-b2hook-ApyRBN
+        C:\\Users\\bob\\app     ->  C--Users-bob-app
+
+    Two properties matter and both are load-bearing:
+
+    1. The result must equal the folder Claude Code itself writes session
+       files into. Anything else sends the queue and auto-memory to a folder
+       that ``--scan-history`` never reads, with no error.
+    2. The result must be one legal directory name on every platform. A
+       Windows drive colon survived the old encoder and made ``mkdir`` raise
+       ``WinError 267``, which the hook's top-level handler swallowed.
+    """
+    encoded = []
+    for ch in path_str:
+        if ch.isascii() and ch.isalnum():
+            encoded.append(ch)
+        else:
+            # Claude Code does this with a JavaScript regex that carries no /u
+            # flag, so it matches per UTF-16 CODE UNIT, not per character. A
+            # character outside the BMP -- an emoji in a folder name -- is a
+            # surrogate pair there and becomes TWO dashes. Measured against a
+            # live probe: "/private/tmp/cr-probe2/emoji \U0001f600 x" produced
+            # "-private-tmp-cr-probe2-emoji----x", four dashes for
+            # space + emoji + space.
+            try:
+                units = len(ch.encode("utf-16-le")) // 2
+            except UnicodeEncodeError:
+                # A path byte that is not valid UTF-8 survives os.fsdecode as a
+                # lone surrogate (b"\xe9" -> "\udce9"), which cannot be encoded.
+                # It is one UTF-16 code unit, so one dash.
+                units = 1
+            encoded.append("-" * units)
+    return "".join(encoded)
+
+
+def _legacy_encode_project_path(path_str: str) -> str:
+    """Reproduce the pre-3.2 encoder, for migrating folders it created.
+
+    It replaced only the path separators, so any path holding ``_``, ``.``,
+    a space or any other non-alphanumeric character landed in a folder
+    Claude Code never used.
+    """
+    folder_name = path_str.replace("/", "-").replace("\\", "-")
+    if folder_name.startswith("-"):
+        folder_name = folder_name[1:]
+    return "-" + folder_name
+
+
 def get_project_folder_name(project_dir: Optional[str] = None) -> str:
     """Encode a project directory path using Claude Code's folder naming convention.
 
     /Users/bob/myapp → -Users-bob-myapp
     """
     project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
-    folder_name = str(project_path).replace("/", "-").replace("\\", "-")
-    if folder_name.startswith("-"):
-        folder_name = folder_name[1:]
-    return "-" + folder_name
+    # Claude Code normalizes the resolved cwd to NFC before encoding. macOS
+    # hands back NFD for anything Finder or unzip created, and the two differ
+    # in LENGTH -- "café" is 4 code points in NFC and 5 in NFD, so the
+    # decomposed form emits one extra dash and names a folder that does not
+    # exist. Confirmed by probe: a directory stored NFD as
+    # "Мой проект café" got a 35-character folder, not 37.
+    # Claude Code normalizes the resolved cwd to NFC before encoding. macOS
+    # hands back NFD for anything Finder or unzip created, and the two differ
+    # in LENGTH -- "café" is 4 code points composed and 5 decomposed - so the
+    # decomposed form emits an extra dash and names a folder that does not
+    # exist. Confirmed by probe: a directory stored NFD as "Мой проект café"
+    # got a 35-character folder, not 37.
+    canonical = unicodedata.normalize("NFC", str(project_path))
+    encoded = _encode_project_path(canonical)
+    if len(encoded) <= MAX_PROJECT_FOLDER_NAME_LEN:
+        return encoded
+    return _resolve_long_folder_name(encoded, canonical)
+
+
+def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
+    """Move claude-reflect's files out of a folder the pre-3.2 encoder created.
+
+    The old encoder replaced only path separators, so a project path holding
+    ``_``, ``.`` or a space (``/Users/bob/my_app``) got its queue written to
+    ``-Users-bob-my_app`` while Claude Code kept its sessions in
+    ``-Users-bob-my-app``. Nothing errored: the wrong folder existed, so
+    ``--scan-history`` searched it, found no ``*.jsonl`` and reported nothing.
+
+    Only files this plugin owns are moved -- the queue and ``memory/*.md``.
+    Session files are never touched, and the old folder is removed only if
+    moving its contents leaves it empty.
+    """
+    try:
+        project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
+    except (OSError, ValueError):
+        return
+
+    legacy_name = _legacy_encode_project_path(str(project_path))
+    # Resolve through get_project_folder_name, not _encode_project_path: for a
+    # path over 200 characters those differ, and migrating into a third name
+    # would recreate the split this function exists to heal.
+    current_name = get_project_folder_name(str(project_path))
+    if legacy_name == current_name:
+        return
+
+    projects_dir = get_claude_dir() / "projects"
+    legacy_dir = projects_dir / legacy_name
+    if not legacy_dir.is_dir():
+        return
+    if legacy_dir.is_symlink():
+        # is_dir() follows the link, and moving files out of wherever it
+        # points is not what "migrate our own folder" means.
+        return
+
+    current_dir = projects_dir / current_name
+
+    # Merge the queue, oldest first, dropping items already carried over.
+    legacy_queue = legacy_dir / "learnings-queue.json"
+    current_queue_probe = current_dir / "learnings-queue.json"
+    try:
+        if (legacy_queue.exists() and current_queue_probe.exists()
+                and legacy_queue.resolve() == current_queue_probe.resolve()):
+            # Both names point at one file. Merging it into itself and then
+            # unlinking "the old one" would delete the queue we just wrote.
+            return
+    except OSError:
+        return
+    if legacy_queue.is_file():
+        readable = True
+        try:
+            legacy_items = json.loads(legacy_queue.read_text(encoding="utf-8"))
+        except (ValueError, IOError, OSError):
+            legacy_items, readable = [], False
+        if not isinstance(legacy_items, list):
+            legacy_items, readable = [], False
+        if legacy_items:
+            current_queue = current_dir / "learnings-queue.json"
+            existing: List[Dict[str, Any]] = []
+            if current_queue.is_file():
+                try:
+                    loaded = json.loads(current_queue.read_text(encoding="utf-8"))
+                except (ValueError, IOError, OSError):
+                    # Unreadable is not empty. Treating it as [] would write
+                    # the legacy items OVER the user's only copy -- the same
+                    # principle applied to the legacy file one block up.
+                    return
+                if not isinstance(loaded, list):
+                    return
+                existing = loaded
+            seen = {_queue_item_key(i) for i in existing}
+            merged = existing + [
+                i for i in legacy_items
+                if isinstance(i, dict) and _queue_item_key(i) not in seen
+            ]
+            try:
+                save_queue_at(current_queue, merged)
+            except (IOError, OSError):
+                return
+        if readable:
+            # Only discard the old file once its contents are safely in the
+            # new one. A queue we could not parse is left where it is -- it
+            # is the user's only copy, and deleting it is not our call.
+            try:
+                legacy_queue.unlink()
+            except OSError:
+                pass
+
+    # Move auto-memory files that the correct folder does not already have.
+    legacy_memory = legacy_dir / "memory"
+    if legacy_memory.is_dir():
+        current_memory = current_dir / "memory"
+        for md_file in sorted(legacy_memory.glob("*.md")):
+            target = current_memory / md_file.name
+            if target.exists():
+                # Do not clobber, but do not strand it either: the folder
+                # would survive forever and be re-globbed on every prompt.
+                stamp = md_file.stem + ".from-legacy" + md_file.suffix
+                target = current_memory / stamp
+                if target.exists():
+                    continue
+            try:
+                current_memory.mkdir(parents=True, exist_ok=True)
+                md_file.replace(target)
+            except OSError:
+                continue
+        try:
+            legacy_memory.rmdir()
+        except OSError:
+            pass  # still holds files we did not move
+
+    # The marker is ours as well. Left behind it keeps the legacy folder
+    # alive, which keeps `ls ~/.claude/projects | grep <basename>` in
+    # /reflect resolving to the wrong folder -- so --scan-history keeps
+    # listing zero sessions and the `tr '_' '-'` fallback never fires,
+    # because the first grep never fails.
+    legacy_marker = legacy_dir / ".reflect-initialized"
+    if legacy_marker.is_file():
+        try:
+            current_dir.mkdir(parents=True, exist_ok=True)
+            (current_dir / ".reflect-initialized").touch()
+            legacy_marker.unlink()
+        except OSError:
+            pass
+
+    # Remove the stale folder only when nothing is left in it.
+    try:
+        legacy_dir.rmdir()
+    except OSError:
+        pass  # session files or anything else we do not own
+
+
+def _queue_item_key(item: Any) -> Tuple[str, str]:
+    """Identity of a queue item for de-duplication during migration."""
+    if not isinstance(item, dict):
+        return ("", "")
+    return (str(item.get("timestamp", "")), str(item.get("message", "")))
+
+
+# Claude Code caps a project folder name at this many characters; past it the
+# name is truncated to exactly this length and a short hash is appended, e.g.
+# "<200 chars>-gmu1b2". Measured against a live probe on 2026-09-19.
+MAX_PROJECT_FOLDER_NAME_LEN = 200
+
+
+def _long_name_hash(canonical_path: str) -> str:
+    """Reproduce Claude Code's suffix for an over-long folder name.
+
+    A djb2-style rolling hash over the UTF-16 code units of the NFC-resolved
+    cwd (not of the encoded name), coerced to a signed 32-bit int at each
+    step the way JavaScript's ``|0`` does, then ``Math.abs`` in base 36.
+
+    Verified against a live probe: the 265-character path
+    /private/tmp/cr-probe2/<80 d>/<80 e>/<80 f> produced the suffix
+    "gmu1b2", which this reproduces exactly.
+    """
+    acc = 0
+    units = canonical_path.encode("utf-16-le", errors="surrogatepass")
+    for i in range(0, len(units) - 1, 2):
+        code = units[i] | (units[i + 1] << 8)
+        acc = (acc << 5) - acc + code
+        acc = ((acc + 0x80000000) % 0x100000000) - 0x80000000  # JS  |0
+    acc = abs(acc)
+    if acc == 0:
+        return "0"
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while acc:
+        out = digits[acc % 36] + out
+        acc //= 36
+    return out
+
+
+def _resolve_long_folder_name(encoded: str, canonical_path: str) -> str:
+    """Name the truncated-and-hashed folder Claude Code uses for a long path.
+
+    Claude Code truncates to MAX_PROJECT_FOLDER_NAME_LEN and appends
+    "-<hash>". We can compute that hash (see _long_name_hash), but the
+    algorithm is an implementation detail of a version we do not control, so
+    an existing folder on disk wins over the computed name. The computed name
+    is the fallback for a project Claude Code has not written yet, which is
+    strictly better than the bare prefix -- a name it would never use.
+    """
+    prefix = encoded[:MAX_PROJECT_FOLDER_NAME_LEN]
+    projects_dir = get_claude_dir() / "projects"
+    try:
+        # The encoding leaves only [A-Za-z0-9-], so the prefix is glob-safe.
+        matches = sorted(
+            d.name for d in projects_dir.glob(prefix + "-*") if d.is_dir()
+        )
+    except OSError:
+        return encoded
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        # Claude Code has not created it yet: compute the name it will use.
+        return prefix + "-" + _long_name_hash(canonical_path)
+    # Two projects sharing a 200-character prefix. Ask the session files which
+    # folder is ours rather than guessing.
+    for name in matches:
+        for session in (projects_dir / name).glob("*.jsonl"):
+            try:
+                with session.open(encoding="utf-8", errors="replace") as fh:
+                    for line_no, line in enumerate(fh):
+                        if line_no > 8:
+                            break
+                        try:
+                            cwd = json.loads(line).get("cwd")
+                        except (json.JSONDecodeError, AttributeError):
+                            continue
+                        if cwd and _encode_project_path(str(cwd)) == encoded:
+                            return name
+            except (IOError, OSError):
+                continue
+            break
+    return matches[0]
 
 
 def get_auto_memory_path(project_dir: Optional[str] = None) -> Path:
@@ -360,6 +1020,21 @@ def get_auto_memory_path(project_dir: Optional[str] = None) -> Path:
     """
     folder_name = get_project_folder_name(project_dir)
     return get_claude_dir() / "projects" / folder_name / "memory"
+
+
+
+def _read_text_capped(path: Path, limit: int = MAX_INCLUSION_FILE_BYTES) -> Optional[str]:
+    """Read at most `limit` bytes of a memory file.
+
+    The inclusion parser caps its own reads, but the files it discovers were
+    then read in full downstream, so one `@huge.md` could exhaust memory
+    after passing every published limit. Returns None on any read error.
+    """
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except (IOError, OSError):
+        return None
 
 
 def read_auto_memory(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -375,7 +1050,9 @@ def read_auto_memory(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
 
     for md_file in sorted(memory_path.glob("*.md")):
         try:
-            text = md_file.read_text(encoding="utf-8")
+            text = _read_text_capped(md_file)
+            if text is None:
+                continue
             entries = [line.strip() for line in text.splitlines() if line.strip()]
             results.append({
                 "file": str(md_file),
@@ -434,9 +1111,8 @@ def read_all_memory_entries(
         filepath = Path(cf["path"])
         if cf["type"] == "global":
             filepath = Path(cf["path"])
-        try:
-            text = filepath.read_text(encoding="utf-8")
-        except (IOError, OSError):
+        text = _read_text_capped(filepath)
+        if text is None:
             continue
 
         for line_num, line in enumerate(text.splitlines(), start=1):
@@ -476,21 +1152,21 @@ def load_queue(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     # Migrate legacy global queue if it has items
     migrate_global_queue()
+    # Migrate a folder left behind by the pre-3.2 path encoder
+    migrate_legacy_project_folder(project_dir)
 
     path = get_queue_path(project_dir)
     if not path.exists():
         return []
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError):
+    except (ValueError, IOError):
         return []
 
 
 def save_queue(items: List[Dict[str, Any]], project_dir: Optional[str] = None) -> None:
-    """Save learnings queue to the project-scoped file."""
-    path = get_queue_path(project_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    """Save learnings queue to the project-scoped file, atomically."""
+    save_queue_at(get_queue_path(project_dir), items)
 
 
 def append_to_queue(item: Dict[str, Any], project_dir: Optional[str] = None) -> None:
@@ -540,7 +1216,17 @@ POSITIVE_PATTERNS = [
 # - Users can use explicit markers like "remember:" in any language
 #
 CORRECTION_PATTERNS = [
-    (r"^no[,. ]+", "no,", True),  # Starts with "no," - common correction opener
+    # Deliberately broad. An allowlist of continuations was tried and it
+    # dropped the highest-value captures this plugin exists for -- project
+    # rules like "no semicolons in this codebase", "no emojis in commit
+    # messages", "no typescript any, ever" -- while still admitting benign
+    # replies, because "it", "this", "you" and "i" are exactly the words that
+    # open one. The benign shapes are denied by name in NON_CORRECTION_PHRASES
+    # instead, and anything that slips past is caught by the semantic pass at
+    # /reflect time. A false positive costs one queue line; a false negative
+    # costs the learning.
+    (r"^no[,.!:;\u2014\u2013-]+\s*\S", "no,", True),
+    (r"^no\s+\S", "no-bare", True),
     (r"^don't\b|^do not\b", "don't", True),  # Starts with don't/do not
     (r"^stop\b|^never\b", "stop/never", True),  # Starts with stop/never
     (r"that's (wrong|incorrect)|that is (wrong|incorrect)", "that's-wrong", True),
@@ -588,6 +1274,19 @@ NON_CORRECTION_PHRASES = [
     r"^don't\s+mind",        # "Don't mind" - agreement
     r"^don't\s+bother",      # "Don't bother" - polite decline
     r"^never\s+mind",        # "Never mind" - dismissal
+    # Answers to a question, not corrections. These are why the "no"
+    # patterns above need a deny-list at all.
+    r"^no\s+idea\b",
+    r"^no\s+(?:it|that|this|we|i|you|they)\s+"
+    r"(?:works?|worked|looks?|seems?|sounds?|reads?)\b",
+    r"^no\s+(?:it|that|this)\s+(?:'s|is|was)\s+(?:fine|good|ok|okay|right|correct)\b",
+    r"^no\s+(?:i|we)\s+(?:think|guess|believe|reckon)\b",
+    r"^no\s+(?:you|we|i)\s+(?:can|could|should)\s+go\s+ahead\b",
+    r"^no\s+(?:i|we)(?:'m|'re| am| are)?\s+(?:all\s+)?(?:good|done|set|fine)\b",
+    # Reports of absence: "no dialog appeared", "no changes were applied".
+    r"^no\s+[\w-]+\s+(?:appeared|happened|occurred|showed|showed\s+up|returned"
+    r"|existed|came|come|changed|matched|was|were|has|have|had)\b",
+    r"^no\s+(?:rush|hurry|pressure|problem|stress)\b",
     r"^stop\s+worrying",     # "Stop worrying" - reassurance
 ]
 
@@ -618,12 +1317,45 @@ CJK_CORRECTION_PATTERNS = [
 # Exception: explicit "remember:" markers are always processed regardless of length.
 MAX_CAPTURE_PROMPT_LENGTH = 500
 
+# Forward-pivot patterns — phrases that indicate the message body is a
+# task instruction following a positive-feedback opener, NOT retrospective
+# feedback. "Perfect! Now let's add X" is structurally a task pivot, not
+# validation of past work. Applied ONLY to positive-pattern matches; real
+# corrections (e.g. "Now let's stop refactoring") still get captured by
+# CORRECTION_PATTERNS since those signals are directive-as-content, not
+# directive-as-followup.
+#
+# Distinct from FALSE_POSITIVE_PATTERNS (which apply to all detections)
+# and NON_CORRECTION_PHRASES (which neutralize correction openers like
+# "no problem"). This list neutralizes positive openers when the message
+# body is a fresh request rather than reflection on past behavior.
+# Narrow on purpose. A broader version rejected ordinary praise: "Nailed it!
+# Please keep using this pattern", "that's exactly right, we need to remember
+# this", "Perfect... Now I understand why it fails" -- all retrospective
+# feedback that merely contains "please", "we need to" or "now I". A pivot
+# has to introduce a NEW instruction, so require an imperative after it
+# rather than any of those words appearing anywhere in the message.
+_SLASH_COMMAND_RE = re.compile(r"/[A-Za-z][\w.-]*(?::[\w.-]+)?(?:\s|$)")
+
+FORWARD_PIVOT_PATTERNS = [
+    r"\b(now|next)[, ]+let'?s\b",
+    r"\b(now|next)[, ]+(we|i)\s+(need to|should|have to|must|will)\b",
+    r"\blet'?s (add|do|build|move|update|change|fix|implement)\b",
+    r"\bgo ahead and\s+\w+",
+]
+
 # Maximum message length for weak patterns (structural heuristic)
 # Long messages are more likely to be context/tasks than corrections
 MAX_WEAK_PATTERN_LENGTH = 150
 
 # Very short messages without question marks are more likely corrections
 MIN_SHORT_CORRECTION_LENGTH = 80
+
+# Minimum length for a positive to be worth queueing.
+# Bare praise ("i love it", "perfect!", "nailed it") has no referent — by the
+# time /reflect runs, there is no way to tell what was being praised, so it
+# cannot become a memory. Longer positives usually name the thing.
+MIN_POSITIVE_CONTEXT_LENGTH = 25
 
 
 def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
@@ -638,6 +1370,21 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
         sentiment: "correction" or "positive"
         decay_days: Number of days until decay
     """
+    # Slash-command guard — /loop, /reflect, /ia:full-review etc. expand
+    # into long skill bodies that incidentally contain correction tokens
+    # (e.g. "use" + "not" in unrelated text). Slash commands are skill
+    # invocations, never user feedback, so they should never enter the
+    # queue. This is the FIRST check because no downstream pattern
+    # (explicit, positive, correction, guardrail) should fire on them.
+    # A slash COMMAND, not any leading slash. The earlier startswith("/")
+    # also ate absolute paths and comments -- "/etc/hosts is wrong, use
+    # 127.0.0.1 not localhost" and "/Users/bob/gen.ts - remember: never edit
+    # generated files" both vanished, the second one breaking the documented
+    # promise that "remember:" is always processed. A command is one token of
+    # word characters (optionally plugin:name) with no second slash.
+    if _SLASH_COMMAND_RE.match(text.lstrip()):
+        return (None, "", 0.0, "correction", 90)
+
     # Too short to be actionable (e.g. "OK", "好", "yes")
     # CJK characters carry more meaning per char, so use a lower threshold
     stripped = text.strip()
@@ -675,6 +1422,20 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
             matched_positive.append(name)
 
     if matched_positive:
+        # Bare praise carries no referent — drop it rather than queue an
+        # item that /reflect cannot turn into anything.
+        if len(text.strip()) < MIN_POSITIVE_CONTEXT_LENGTH:
+            return (None, "", 0.0, "positive", 90)
+
+        # Forward-pivot guard — "Perfect! Now let's add X" matches the
+        # positive pattern but the body is a fresh task instruction, not
+        # retrospective feedback. Reject so we don't pollute the queue
+        # with task pivots (which are never reusable learnings).
+        # Applied ONLY here, not to corrections — "Now let's stop X" is
+        # a legitimate correction even when phrased as a task pivot.
+        for fp_pattern in FORWARD_PIVOT_PATTERNS:
+            if re.search(fp_pattern, text, re.IGNORECASE):
+                return (None, "", 0.0, "correction", 90)
         return ("positive", " ".join(matched_positive), 0.70, "positive", 90)
 
     # Skip long messages for weak patterns (likely task requests)

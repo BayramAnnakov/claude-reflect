@@ -6,6 +6,7 @@ Run with: python -m pytest tests/test_integration.py -v
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,13 @@ from pathlib import Path
 # Skip bash tests on Windows
 IS_WINDOWS = sys.platform == 'win32'
 skip_on_windows = unittest.skipIf(IS_WINDOWS, "Bash scripts not available on Windows")
+
+# The deprecated bash scripts in scripts/legacy/ parse JSON with jq. The GitHub
+# runners ship jq, so CI never notices it is missing - but on a bare machine the
+# scripts emit nothing, which fails the "extracts X" tests and silently PASSES
+# the "ignores Y" ones. Skip rather than let either happen.
+HAS_JQ = shutil.which("jq") is not None
+skip_without_jq = unittest.skipUnless(HAS_JQ, "legacy bash scripts require jq")
 
 # Script locations
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
@@ -75,6 +83,7 @@ class TestPostCommitReminder(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_git_commit_detected(self):
         """Test bash script detects git commit."""
         stdin = json.dumps({"tool_input": {"command": "git commit -m 'test'"}})
@@ -94,6 +103,7 @@ class TestPostCommitReminder(unittest.TestCase):
         self.assertIn("Git commit detected", stdout)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_ignores_amend(self):
         """Test bash script ignores --amend commits."""
         stdin = json.dumps({"tool_input": {"command": "git commit --amend -m 'test'"}})
@@ -113,6 +123,7 @@ class TestPostCommitReminder(unittest.TestCase):
         self.assertNotIn("Git commit detected", stdout)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_ignores_non_commit(self):
         """Test bash script ignores non-commit commands."""
         stdin = json.dumps({"tool_input": {"command": "ls -la"}})
@@ -132,6 +143,7 @@ class TestPostCommitReminder(unittest.TestCase):
         self.assertEqual(stdout.strip(), "")
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_empty_input(self):
         """Test bash script handles empty input."""
         stdout, stderr, code = run_bash_script(
@@ -147,6 +159,7 @@ class TestPostCommitReminder(unittest.TestCase):
         self.assertEqual(code, 0)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_invalid_json(self):
         """Test bash script handles invalid JSON."""
         stdout, stderr, code = run_bash_script(
@@ -182,6 +195,7 @@ class TestExtractSessionLearnings(unittest.TestCase):
                 f.write(json.dumps(entry) + "\n")
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_extracts_user_messages(self):
         """Test bash script extracts user messages."""
         self._create_session_file([
@@ -227,6 +241,7 @@ class TestExtractSessionLearnings(unittest.TestCase):
         self.assertIn("Hello world", stdout)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_skips_meta_messages(self):
         """Test bash script skips isMeta messages."""
         self._create_session_file([
@@ -280,6 +295,7 @@ class TestExtractSessionLearnings(unittest.TestCase):
         self.assertIn("Regular message", stdout)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_corrections_only_flag(self):
         """Test bash script --corrections-only flag."""
         self._create_session_file([
@@ -331,6 +347,7 @@ class TestExtractSessionLearnings(unittest.TestCase):
         self.assertIn("no, use Python", stdout)
 
     @skip_on_windows
+    @skip_without_jq
     def test_bash_nonexistent_file(self):
         """Test bash script handles nonexistent file."""
         stdout, stderr, code = run_bash_script(
@@ -406,6 +423,7 @@ class TestBashPythonOutputEquivalence(unittest.TestCase):
             for entry in entries:
                 f.write(json.dumps(entry) + "\n")
 
+    @skip_without_jq
     def test_extract_same_messages(self):
         """Test bash and Python extract the same messages."""
         self._create_session_file([
@@ -444,6 +462,7 @@ class TestBashPythonOutputEquivalence(unittest.TestCase):
 
         self.assertEqual(bash_lines, python_lines)
 
+    @skip_without_jq
     def test_extract_same_corrections(self):
         """Test bash and Python extract the same corrections."""
         self._create_session_file([

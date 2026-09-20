@@ -42,7 +42,7 @@ or corrections will be auto-detected. Run /reflect to process.
 
 **Step 1: Read the project-scoped queue file:**
 ```bash
-python3 scripts/read_queue.py 2>/dev/null || echo "[]"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py" 2>/dev/null || echo "[]"
 ```
 
 **Step 2: Parse and format each item with:**

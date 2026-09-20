@@ -1,9 +1,9 @@
 # claude-reflect
 
 [![GitHub stars](https://img.shields.io/github/stars/BayramAnnakov/claude-reflect?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/stargazers)
-[![Version](https://img.shields.io/badge/version-2.6.0-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
+[![Version](https://img.shields.io/badge/version-3.2.0-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
+[![Tests](https://img.shields.io/badge/tests-322%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect#platform-support)
 
 A self-learning system for Claude Code that captures corrections and discovers workflow patterns — turning them into permanent memory and reusable skills.
@@ -150,6 +150,7 @@ Approved learnings are synced to:
 - `./**/CLAUDE.md` (subdirectories - auto-discovered)
 - `./.claude/commands/*.md` (skill files - when correction relates to a skill)
 - `AGENTS.md` (if exists - works with Codex, Cursor, Aider, Jules, Zed, Factory)
+- Docs reachable from the above via `@filename` includes or markdown links (bounded depth, cycles handled, code blocks/external URLs skipped) — useful when CLAUDE.md delegates guidance to `standards.md`, `architecture.md`, etc.
 
 Run `/reflect --targets` to see which files will be updated.
 

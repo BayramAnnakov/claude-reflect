@@ -73,14 +73,14 @@ Check for:
 **Default behavior:** Only scan current project's sessions unless `--all-projects` specified.
 
 ```bash
-# Get current project's session directory
-PROJECT_PATH=$(pwd)
-PROJECT_DIR=$(echo "$PROJECT_PATH" | sed 's|/|-|g' | sed 's|^-||')
-SESSION_PATH="$HOME/.claude/projects/-${PROJECT_DIR}/"
-
-# Verify session directory exists
-ls -la "$SESSION_PATH" 2>/dev/null | head -5
+# Resolve this project's session directory. Do NOT encode the path in shell:
+# `sed 's|/|-|g'` leaves "_", "." and spaces alone, so it names a folder
+# Claude Code never writes to and the scan silently finds nothing.
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py"
 ```
+
+Read `session_dir`, `session_dir_exists` and `session_files` from the JSON it
+prints. If `session_dir_exists` is false, report that and stop.
 
 If `--all-projects` is specified:
 ```bash

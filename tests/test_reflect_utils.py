@@ -314,6 +314,58 @@ class TestPatternDetection(unittest.TestCase):
 
         self.assertIsNone(item_type)
 
+    def test_bare_no_statement_rejected(self):
+        """Statements that merely start with the word 'no' are not corrections.
+
+        Regression: '^no[,. ]+' allowed a bare space, so any sentence opening
+        with "no" was captured — including answers to Claude's own questions.
+        """
+        for text in [
+            "no dialog appeared",
+            "no idea",
+            "no problem",
+            "no worries",
+            "no rush on this",
+            "no results came back",
+        ]:
+            with self.subTest(text=text):
+                item_type, _, _, _, _ = detect_patterns(text)
+                self.assertIsNone(item_type, f"false positive on: {text}")
+
+    def test_addressed_no_still_captured(self):
+        """Real corrections opening with a bare 'no' must still be captured."""
+        for text in [
+            "no you got that wrong - they take time for each game",
+            "no bro Melik said that but that's Melik's vocabulary",
+            "no it should use the other endpoint",
+            "no don't touch that file",
+            "no I meant the second one",
+        ]:
+            with self.subTest(text=text):
+                item_type, _, _, _, _ = detect_patterns(text)
+                self.assertIsNotNone(item_type, f"missed correction: {text}")
+
+    def test_punctuated_no_still_captured(self):
+        """The canonical 'no, use X' form is unaffected by the fix."""
+        item_type, patterns, _, _, _ = detect_patterns("no, use gpt-5.1 not gpt-5")
+        self.assertIsNotNone(item_type)
+        self.assertIn("no,", patterns)
+
+    def test_bare_positive_rejected(self):
+        """Praise with no referent cannot become a memory, so it is dropped."""
+        for text in ["i love it", "perfect!", "nailed it", "excellent"]:
+            with self.subTest(text=text):
+                item_type, _, _, _, _ = detect_patterns(text)
+                self.assertIsNone(item_type, f"contentless positive queued: {text}")
+
+    def test_positive_with_context_still_captured(self):
+        """Positives that name what they praise are still worth queueing."""
+        item_type, _, _, sentiment, _ = detect_patterns(
+            "love it, keep the tables compact like that in future reports"
+        )
+        self.assertEqual(item_type, "positive")
+        self.assertEqual(sentiment, "positive")
+
     def test_short_message_confidence_boost(self):
         """Test that short messages get a confidence boost."""
         result = detect_patterns("no, use gpt-5.1")
@@ -501,6 +553,115 @@ class TestCJKPatternDetection(unittest.TestCase):
 
         # Guardrail
         result = detect_patterns("don't add comments unless I ask")
+        self.assertEqual(result[0], "guardrail")
+
+
+class TestStructuralRejection(unittest.TestCase):
+    """Tests for the structural rejection guards in detect_patterns —
+    slash-command bodies and forward-pivot phrases that follow positive
+    feedback. These short-circuit pattern detection regardless of which
+    correction / positive / explicit patterns also match.
+    """
+
+    # ── Slash-command guard ──────────────────────────────────────────────
+    # /loop, /reflect, /ia:full-review etc. expand into long skill bodies
+    # that incidentally contain "use", "not", "perfect", etc. They are
+    # skill invocations, never user feedback, so detect_patterns should
+    # short-circuit on a leading "/" before any pattern check.
+
+    def test_slash_command_loop_not_captured(self):
+        """/loop ... bodies must not capture even if they contain 'use'/'not'."""
+        prompt = "/loop Keep polling the build status; use the artifact URL not the run URL when reporting."
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+        self.assertEqual(result[1], "")
+
+    def test_slash_command_ia_full_review_not_captured(self):
+        """/ia:full-review bodies must not capture despite directive verbs."""
+        prompt = "/ia:full-review --deep please run the chain against the latest commit."
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+
+    def test_slash_command_with_leading_whitespace_not_captured(self):
+        """A leading newline/space before / must not bypass the guard."""
+        prompt = "\n  /reflect --dry-run perfect! check whether the queue is clean"
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+
+    def test_slash_command_with_remember_marker_not_captured(self):
+        """Even an explicit 'remember:' inside a slash-command body
+        must NOT capture — slash commands are non-user-feedback by structure.
+        """
+        prompt = "/loop remember: this should not be captured because it's inside a slash-command body"
+        result = detect_patterns(prompt)
+        self.assertIsNone(result[0])
+
+    def test_non_slash_messages_still_capture_normally(self):
+        """Regression guard: messages NOT starting with / are unaffected
+        by the slash-command check (sanity that the guard isn't too greedy).
+        """
+        result = detect_patterns("remember: always use bun")
+        self.assertEqual(result[0], "explicit")
+
+    # ── Forward-pivot guard for positive matches ─────────────────────────
+    # "Perfect! Now let's add X" hits POSITIVE_PATTERNS but the body is
+    # a forward-looking task instruction, not retrospective feedback.
+    # The guard rejects ONLY positive matches when a forward-pivot
+    # phrase is also present.
+
+    def test_positive_with_now_lets_pivot_rejected(self):
+        """'Perfect! Now let's add X' is a task pivot — must not capture."""
+        result = detect_patterns(
+            "Perfect! Now let's add the new column to the modal "
+            "right after the title field."
+        )
+        self.assertIsNone(result[0])
+
+    def test_positive_with_lets_implement_pivot_rejected(self):
+        """'Perfect, exactly right! Let's implement that fix' — task pivot."""
+        result = detect_patterns(
+            "perfect! exactly right. Let's implement the partition-pruning fix now."
+        )
+        self.assertIsNone(result[0])
+
+    def test_positive_with_can_you_pivot_rejected(self):
+        """'Perfect! Can you also update X' — request, not retrospective feedback."""
+        result = detect_patterns(
+            "Nailed it! Can you also update the README with the new flags?"
+        )
+        self.assertIsNone(result[0])
+
+    def test_positive_pure_feedback_still_captures(self):
+        """Pure positive feedback (no task pivot) still captures — the
+        guard rejects ONLY positive matches with forward-pivot phrases.
+        Required to prove the guard isn't over-greedy.
+        """
+        result = detect_patterns(
+            "Perfect, that's exactly what I wanted — the GDU projection "
+            "approach was the right call because the simple engine "
+            "doesn't emit V-stages."
+        )
+        self.assertEqual(result[0], "positive")
+        self.assertEqual(result[3], "positive")
+
+    def test_correction_with_pivot_still_captures(self):
+        """Forward-pivot guard is scoped to POSITIVE matches only.
+        'Now let's stop using X' is a correction directive even though
+        it contains a pivot phrase — must still capture as 'auto'.
+        """
+        result = detect_patterns(
+            "Now let's stop using the legacy regex approach; "
+            "use the structural filter instead, not the pattern list."
+        )
+        self.assertEqual(result[0], "auto")
+
+    def test_guardrail_with_pivot_still_captures(self):
+        """Guardrails are checked BEFORE positive — pivot guard doesn't
+        leak into the guardrail branch.
+        """
+        result = detect_patterns(
+            "Now let's stop refactoring unrelated code, please."
+        )
         self.assertEqual(result[0], "guardrail")
 
 
@@ -1068,6 +1229,146 @@ class TestCaptureLearningFiltering(unittest.TestCase):
             "Don't use the old API, use the new one instead."
         )
         self.assertFalse(should_include_message(msg))
+
+
+
+class TestReviewGateRegressions(unittest.TestCase):
+    """Cases the two-vendor review gate found after #37 and #44 were merged.
+
+    Both reviewers independently produced prompts a real user types that the
+    new guards dropped. Each string below is one of those, kept verbatim so a
+    future tightening of the same regexes fails here instead of in someone's
+    queue.
+    """
+
+    def _captured(self, text):
+        return detect_patterns(text)[0] is not None
+
+    def test_no_thing_comma_instruction_is_a_correction(self):
+        for text in [
+            "no python, use typescript",
+            "no async, make it sync",
+            "no GPT-5, use Claude",
+            "no classes \u2014 use functions",
+            "No Claude, use ripgrep",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(self._captured(text))
+
+    def test_no_thing_imperative_without_punctuation(self):
+        self.assertTrue(self._captured("no bun use npm"))
+
+    def test_bare_no_statements_still_rejected(self):
+        """The reason #44 narrowed this in the first place."""
+        for text in [
+            "no dialog appeared",
+            "no idea",
+            "no problem",
+            "no worries",
+            "no need",
+            "no changes were applied",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(self._captured(text))
+
+    def test_praise_containing_please_or_we_need_to_survives(self):
+        """A forward-pivot guard must not eat retrospective feedback."""
+        for text in [
+            "Nailed it! Please keep using this pattern for the other modules.",
+            "that's exactly right, we need to remember this next time",
+            "Perfect, that's exactly the GDU approach. Now I understand why it fails.",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(detect_patterns(text)[0], "positive")
+
+    def test_real_task_pivots_still_rejected(self):
+        """What #37 was actually aiming at."""
+        for text in [
+            "Perfect! Now let's add the new column",
+            "Perfect! Now we need to add the column",
+            "/loop use the artifact URL not the run URL",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(self._captured(text))
+
+
+
+class TestFableGateRegressions(unittest.TestCase):
+    """Third-reviewer findings. Every string here was captured at 8dc9db4,
+    dropped by #37/#44, and is restored.
+
+    The shape that mattered: an allowlist of continuations after "no" drops
+    project RULES ("no semicolons in this codebase") while still admitting
+    benign replies, because "it", "this", "you" and "i" are exactly the words
+    a benign reply opens with. Detection favours recall now; the semantic
+    pass at /reflect time is what filters.
+    """
+
+    def _t(self, text):
+        return detect_patterns(text)[0]
+
+    def test_project_rules_after_no_are_captured(self):
+        for text in [
+            "no tabs, use spaces",
+            "no semicolons in this codebase",
+            "no emojis in commit messages",
+            "no mocks - hit the real database in tests",
+            "no comments in the code",
+            "no just revert it",
+            "no always run the tests first",
+            "no never commit directly to main",
+            "no wrong file",
+            "no - use pnpm",
+            "No pnpm here, this repo is on yarn",
+            "no typescript any, ever",
+            "no revert that",
+            "no should be snake_case",
+            "no in the backend folder",
+            "no with venv",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNotNone(self._t(text))
+
+    def test_benign_replies_after_no_are_rejected(self):
+        for text in [
+            "no it works now thanks",
+            "no this looks good",
+            "no you can go ahead",
+            "no i think we're done for today",
+            "no idea",
+            "no dialog appeared",
+            "no rush on this",
+            "no results came back",
+            "no changes were applied",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNone(self._t(text))
+
+    def test_slash_guard_does_not_eat_absolute_paths(self):
+        """startswith("/") also ate paths, breaking the remember: contract."""
+        self.assertEqual(
+            self._t("/Users/bob/app/src/gen.ts - remember: never edit generated files"),
+            "explicit")
+        self.assertIsNotNone(self._t("/etc/hosts is wrong, use 127.0.0.1 not localhost"))
+        self.assertIsNotNone(self._t("// never use var, use const not let"))
+
+    def test_actual_slash_commands_still_rejected(self):
+        for text in [
+            "/loop use the artifact URL not the run URL",
+            "/reflect --dry-run perfect! check the queue",
+            "/ia:full-review don't use any",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNone(self._t(text))
+
+    def test_praise_containing_please_anywhere_survives(self):
+        for text in [
+            "perfect! always structure the tests like that please",
+            "great approach, please keep using small focused commits",
+            "that's exactly what I wanted - we need to do it this way every time",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(self._t(text), "positive")
 
 
 if __name__ == "__main__":

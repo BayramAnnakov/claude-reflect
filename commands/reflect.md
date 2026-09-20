@@ -17,7 +17,7 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 ## Context
 - Project CLAUDE.md: @CLAUDE.md
 - Global CLAUDE.md: @~/.claude/CLAUDE.md
-- Learnings queue (per-project): !`python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/scripts/read_queue.py" 2>/dev/null || echo "[]"`
+- Learnings queue (per-project): !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py" 2>/dev/null || echo "[]"`
 - Current project: !`pwd`
 
 ## Multi-Target Export
@@ -34,6 +34,7 @@ Claude-reflect syncs learnings to CLAUDE.md files (including subdirectories), sk
 | **Subdirectory CLAUDE.md** | `./**/CLAUDE.md` | Markdown | Auto-discovered |
 | **Project Rules** | `./.claude/rules/*.md` | Markdown | Modular rules, optional path-scoping |
 | **User Rules** | `~/.claude/rules/*.md` | Markdown | Global modular rules |
+| **Referenced Docs** | docs reachable via `@` or markdown links | Markdown | Bounded inclusion-graph traversal from memory files |
 | **Skill Files** | `./commands/*.md` | Markdown | When correction relates to skill |
 | **Auto Memory** | `~/.claude/projects/<project>/memory/*.md` | Markdown | Low-confidence, exploratory learnings |
 | **AGENTS.md** | `./AGENTS.md` | Markdown | Industry standard (Codex, Cursor, Aider, Jules, Zed, Factory) |
@@ -42,10 +43,13 @@ Claude-reflect syncs learnings to CLAUDE.md files (including subdirectories), sk
 
 Use the Python utility to find all memory tier files:
 ```python
-from scripts.lib.reflect_utils import find_claude_files
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
+from lib.reflect_utils import find_claude_files
 files = find_claude_files()
 # Returns list of {path, relative_path, type, frontmatter}
-# Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule'
+# Types: 'global', 'root', 'local', 'subdirectory', 'rule', 'user-rule', 'referenced'
+# 'referenced' files are docs reachable from memory files via @-includes or
+# markdown links; they include 'referenced_from' and 'depth' fields.
 ```
 
 Or discover manually:
@@ -70,6 +74,7 @@ ls ~/.claude/rules/*.md 2>/dev/null
 - **Personal/local** (machine-specific, not for team) → `./CLAUDE.local.md`
 - **Low-confidence** (0.60-0.74) → auto memory for later promotion
 - **Project-specific** → `./CLAUDE.md` or subdirectory file
+- **Topic-aligned referenced docs** (e.g. `standards.md`, `architecture.md` reached via `@` or markdown links from CLAUDE.md / AGENTS.md) → that doc, when the learning matches its topic
 - Let users override routing with AI reasoning
 
 **Note on Confidence & Decay:**
@@ -93,7 +98,7 @@ ls ~/.claude/rules/*.md 2>/dev/null
 ```
 TodoWrite tasks for /reflect:
 1. "Parse arguments and check flags" (--dry-run, --scan-history, etc.)
-2. "Load learnings queue from ~/.claude/learnings-queue.json"
+2. "Load learnings queue for this project (path from project_paths.py)"
 3. "Scan historical sessions" (if --scan-history)
 4. "Validate learnings with semantic analysis"
 5. "Filter by project context (global vs project-specific)"
@@ -116,7 +121,7 @@ TodoWrite tasks for /reflect:
 {
   "todos": [
     {"content": "Parse arguments (--scan-history detected)", "status": "in_progress", "activeForm": "Parsing command arguments"},
-    {"content": "Load learnings queue", "status": "pending", "activeForm": "Loading queue from ~/.claude/learnings-queue.json"},
+    {"content": "Load learnings queue", "status": "pending", "activeForm": "Loading this project's learnings queue"},
     {"content": "Scan historical sessions", "status": "pending", "activeForm": "Scanning past sessions for corrections"},
     {"content": "Validate with semantic analysis", "status": "pending", "activeForm": "Validating learnings semantically"},
     {"content": "Filter by project context", "status": "pending", "activeForm": "Filtering global vs project learnings"},
@@ -182,6 +187,10 @@ Rule Files:
   ./.claude/rules/coding-style.md       15 lines  ✓  [paths: src/]
   ~/.claude/rules/model-preferences.md  10 lines  ✓
 
+Referenced Docs (via @ / markdown links):
+  ./docs/standards.md                    ← from ./CLAUDE.md            (depth 1)
+  ./docs/architecture.md                 ← from ./docs/standards.md    (depth 2)
+
 Auto Memory:
   ~/.claude/projects/.../memory/         3 files (general.md, tool-usage.md, workflow.md)
 
@@ -217,7 +226,7 @@ Exit after showing targets (don't process learnings).
 Show learnings with their confidence and decay status:
 
 ```bash
-cat ~/.claude/learnings-queue.json | jq -r '.[] | "\(.timestamp) | conf:\(.confidence // 0.5) | decay:\(.decay_days // 90)d | \(.message | .[0:60])"'
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py" | jq -r '.[] | "\(.timestamp) | conf:\(.confidence // 0.5) | decay:\(.decay_days // 90)d | \(.message | .[0:60])"'
 ```
 
 Display table of learnings with decay status:
@@ -259,6 +268,7 @@ Look for lines starting with `- ` under section headers. Track line numbers.
 
 Use the contradiction detector to find conflicting entries:
 ```python
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
 from lib.semantic_detector import detect_contradictions
 
 # Collect all entries from both files
@@ -366,7 +376,8 @@ Analyze the full memory hierarchy and suggest reorganization to reduce clutter a
 **1. Inventory all memory locations:**
 
 ```python
-from scripts.lib.reflect_utils import find_claude_files, read_auto_memory, read_all_memory_entries
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
+from lib.reflect_utils import find_claude_files, read_auto_memory, read_all_memory_entries
 
 files = find_claude_files()
 auto_memory = read_auto_memory()
@@ -450,14 +461,19 @@ Check if /reflect has been run in THIS project before. Run these commands separa
 
 **WARNING**: Do NOT combine these into a single compound command with `$(...)`. Claude Code's bash executor mangles subshell syntax. Run each command individually and manually substitute the result.
 
-1. Find the project folder name:
+1. Get the project folder from the resolver, not from a `grep` over
+   `~/.claude/projects`. That grep matches on basename, so for a project at
+   `…/darwin_new` it finds the stale `-…-darwin_new` folder rather than the
+   real `-…-darwin-new` one, and every later step then reads the wrong place:
+
 ```bash
-ls ~/.claude/projects/ | grep -i "$(basename "$(pwd)")"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py"
 ```
 
-2. Check if initialized (replace PROJECT_FOLDER with result from step 1):
+2. Check if initialized, using `session_dir` from that JSON:
+
 ```bash
-test -f ~/.claude/projects/PROJECT_FOLDER/.reflect-initialized && echo "initialized" || echo "first-run"
+test -f "<session_dir>/.reflect-initialized" && echo "initialized" || echo "first-run"
 ```
 
 **If "first-run" for this project AND user did NOT pass `--scan-history`:**
@@ -501,23 +517,18 @@ Scan past sessions for corrections missed by hooks. Useful for:
 
 **0.5a. Find ALL session files for this project:**
 
-1. First, list project folders to find the correct path pattern:
-   ```bash
-   ls ~/.claude/projects/ | grep -i "$(basename $(pwd))"
-   ```
+Ask for the resolved paths rather than deriving them in shell — the encoding
+has more rules than it looks (every non-alphanumeric character becomes a dash,
+and long names are truncated and hashed), and hand-rolled `sed`/`grep` versions
+of it have silently pointed at the wrong folder before:
 
-2. **Handle underscores vs hyphens:** Directory names may use underscores (`darwin_new`) but encoded paths use hyphens (`darwin-new`). If first grep fails, try replacing underscores:
-   ```bash
-   # If no match, try with hyphens instead of underscores
-   ls ~/.claude/projects/ | grep -i "$(basename $(pwd) | tr '_' '-')"
-   ```
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py"
+```
 
-3. Then list ALL session files in that folder:
-   ```bash
-   ls ~/.claude/projects/[PROJECT_FOLDER]/*.jsonl
-   ```
-
-Note: Project paths have `/` replaced with `-`. For `/Users/bob/code/myapp`, look for `-Users-bob-code-myapp`.
+Use the `session_files` array it returns (newest first). If `session_dir_exists`
+is false, this project has no session history — say so rather than guessing at
+another folder.
 
 **IMPORTANT**: With `--scan-history`, process ALL session files (not just recent ones). This includes:
 - Main session files (UUID format like `fa5ae539-d170-4fa8-a8d2-bf50b3ec2861.jsonl`)
@@ -575,6 +586,7 @@ For each extracted correction, use semantic analysis to determine if it's a REUS
 **Preferred: Use semantic detector for accuracy:**
 ```python
 # scripts/lib/semantic_detector.py
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
 from lib.semantic_detector import semantic_analyze
 
 result = semantic_analyze(message)
@@ -686,11 +698,12 @@ Tool execution errors (`is_error: true`) that indicate project-specific issues:
 
 **Use the extraction script:**
 ```bash
-python scripts/extract_tool_errors.py --project "$(pwd)" --min-count 2 --json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/extract_tool_errors.py" --project "$(pwd)" --min-count 2 --json
 ```
 
 Or use the utility functions directly:
 ```python
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
 from lib.reflect_utils import extract_tool_errors, aggregate_tool_errors
 
 # Extract from session files
@@ -704,6 +717,7 @@ aggregated = aggregate_tool_errors(errors, min_occurrences=2)
 
 **Semantic validation (optional):**
 ```python
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
 from lib.semantic_detector import validate_tool_errors
 validated = validate_tool_errors(aggregated)
 ```
@@ -734,7 +748,10 @@ If tool error patterns are found, add them to the working list alongside user co
 - Continue to Step 3 (Project-Aware Filtering) with COMBINED list (queue + history + tool-errors)
 
 ### Step 1: Load and Validate
-- Read the queue from `~/.claude/learnings-queue.json`
+- Read the queue with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py"`. The queue is
+  per-project (`~/.claude/projects/<encoded-cwd>/learnings-queue.json`); never read
+  `~/.claude/learnings-queue.json` directly, which is the pre-3.1 global file that
+  migration deletes on first access.
 - Add all queue items to the working list (mark source as "queued")
 - **IMPORTANT**: Even if queue is empty, continue if `--scan-history` will add items
 - Only exit early if: queue is empty AND not doing history scan AND user declines manual capture
@@ -752,6 +769,7 @@ Use the semantic detector (via `claude -p`) to analyze each queued message:
 
 ```python
 # scripts/lib/semantic_detector.py provides:
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
 from lib.semantic_detector import validate_queue_items
 
 # For each item, semantic analysis returns:
@@ -806,7 +824,8 @@ Scan auto memory for entries that may deserve "promotion" to CLAUDE.md, and rout
 **1.6a. Check auto memory for promotion candidates:**
 
 ```python
-from scripts.lib.reflect_utils import read_auto_memory
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
+from lib.reflect_utils import read_auto_memory
 auto_entries = read_auto_memory()
 # Look for entries that have been validated by repeated use
 ```
@@ -885,6 +904,7 @@ Search the current session file for user messages matching correction patterns. 
 If there are extracted corrections from 2b or 2c, use semantic analysis for accurate classification:
 
 ```python
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
 from lib.semantic_detector import semantic_analyze
 result = semantic_analyze(message)
 # Use result["is_learning"], result["extracted_learning"], result["confidence"]
@@ -1064,7 +1084,8 @@ grep -rn -i "keyword" ~/.claude/projects/PROJECT_FOLDER/memory/ 2>/dev/null
 
 Or use the cross-tier deduplication utility:
 ```python
-from scripts.lib.reflect_utils import read_all_memory_entries
+import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
+from lib.reflect_utils import read_all_memory_entries
 entries = read_all_memory_entries()
 # Returns [{text, source_file, source_type, line_number}, ...]
 # Search entries for semantic similarity to each learning
@@ -1318,7 +1339,8 @@ For learnings routed to auto memory (typically confidence 0.60-0.74):
 
 1. Use `suggest_auto_memory_topic()` to determine filename:
    ```python
-   from scripts.lib.reflect_utils import suggest_auto_memory_topic, get_auto_memory_path
+   import sys; sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")  # bundled, not cwd-relative
+   from lib.reflect_utils import suggest_auto_memory_topic, get_auto_memory_path
    topic = suggest_auto_memory_topic(learning_text)  # e.g., "model-preferences"
    memory_dir = get_auto_memory_path()
    ```
@@ -1391,8 +1413,12 @@ If AGENTS.md exists, apply the SAME learnings using this format:
 ### Step 8: Clear Queue
 
 ```bash
-echo "[]" > ~/.claude/learnings-queue.json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/clear_queue.py"
 ```
+
+Clears the per-project queue through `save_queue()`. Do not `echo "[]" >` any
+path: that wrote the pre-3.1 global file and left the real queue intact, so the
+same learnings came back on the next run.
 
 ### Step 9: Confirm
 
@@ -1413,13 +1439,11 @@ DONE: Applied [N] learnings
 ### Step 10: Mark Initialized (Per-Project)
 
 Create marker file for THIS project so first-run detection won't trigger again.
-Use the PROJECT_FOLDER you found in First-Run Detection:
+Use `session_dir` from `project_paths.py`, never a folder name found by grep:
 
 ```bash
-touch ~/.claude/projects/PROJECT_FOLDER/.reflect-initialized
+touch "<session_dir>/.reflect-initialized"
 ```
-
-Replace PROJECT_FOLDER with the actual folder name (e.g., `-Users-bob-myproject`).
 
 ## Formatting Rules
 
