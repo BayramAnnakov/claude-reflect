@@ -151,6 +151,21 @@ unbounded.
 **`_EXTERNAL_SCHEME_RE` treats `C:/Users/...` as a URL scheme**, so Windows
 absolute markdown links are silently skipped.
 
+**Inclusion traversal reaches `node_modules` and `.git`.** `EXCLUDED_DIRS`
+applies to the `os.walk` discovery pass but not to `@`-includes and markdown
+links, so `[pkg](node_modules/pkg/README.md)` and `@.git/notes.md` both surface
+as `/reflect` write targets (Fable, executed).
+*Cost of leaving it:* `/reflect` can be steered into writing a learning into a
+dependency file or into `.git`.
+
+**Auto-memory is keyed on cwd, Claude Code keys it on the git root.** Claude
+Code resolves the canonical worktree root for the project; `get_auto_memory_path`
+uses cwd. A session started in a subdirectory or a worktree writes memory where
+Claude never reads it, and the migration moves memory files to that same wrong
+place (Fable, from the 2.1.278 binary; not independently probed).
+*Cost of leaving it:* auto-memory silently does nothing for subdirectory
+sessions - the same failure class as the folder-encoding bug, one level up.
+
 **Standalone `AGENTS.md` is not an inclusion-graph seed** (codex #12).
 
 **`ensure_utf8_io` has no test and does not set `errors="replace"`.** It is a

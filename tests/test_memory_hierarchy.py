@@ -25,6 +25,7 @@ from lib.reflect_utils import (
     _legacy_encode_project_path,
     migrate_legacy_project_folder,
     _resolve_long_folder_name,
+    _long_name_hash,
     save_queue_at,
     MAX_PROJECT_FOLDER_NAME_LEN,
     find_claude_files,
@@ -994,6 +995,42 @@ class TestProjectPathEncoding(unittest.TestCase):
         path = "/Users/bob/caf\udce9dir"
         self.assertEqual(_encode_project_path(path), "-Users-bob-caf-dir")
 
+    def test_nfd_path_is_normalized_to_nfc(self):
+        """macOS hands back NFD for Finder/unzip-created names.
+
+        Claude Code normalizes the resolved cwd to NFC before encoding, and
+        NFD is LONGER -- "café" is 4 code points composed, 5 decomposed - so
+        the decomposed form emits an extra dash and names a folder that does
+        not exist. Probe, 2026-09-19: a directory stored NFD as
+        "Мой проект café" got "-private-tmp-cr-nfd------------caf-" (35),
+        not the 37 characters the raw NFD path would produce.
+        """
+        import unicodedata
+        nfd = unicodedata.normalize("NFD", "/private/tmp/cr-nfd/\u041c\u043e\u0439 \u043f\u0440\u043e\u0435\u043a\u0442 caf\u00e9")
+        nfc = unicodedata.normalize("NFC", nfd)
+        self.assertNotEqual(len(nfd), len(nfc))
+        self.assertEqual(_encode_project_path(nfc), "-private-tmp-cr-nfd------------caf-")
+
+    def test_get_project_folder_name_normalizes_nfd_on_disk(self):
+        """Through the public function, against a real NFD directory.
+
+        Without this the pure-encoder test above passes while
+        get_project_folder_name() still hands back the decomposed form, which
+        is one dash longer and names a folder Claude Code never created.
+        """
+        import unicodedata
+        with tempfile.TemporaryDirectory() as d:
+            nfd_name = unicodedata.normalize("NFD", "caf\u00e9")
+            target = Path(d) / nfd_name
+            target.mkdir()
+            on_disk = str(target.resolve())
+            if on_disk == unicodedata.normalize("NFC", on_disk):
+                self.skipTest("filesystem stores NFC; nothing to normalize here")
+            got = get_project_folder_name(str(target))
+            expected = _encode_project_path(unicodedata.normalize("NFC", on_disk))
+            self.assertEqual(got, expected)
+            self.assertTrue(got.endswith("caf-"), got)
+
     def test_case_is_preserved(self):
         self.assertEqual(_encode_project_path("/Users/Bob/MyApp"), "-Users-Bob-MyApp")
 
@@ -1041,7 +1078,8 @@ class TestLongFolderNameResolution(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
-        self.encoded = "-" + ("a" * 260)   # 261 chars, over the 200 cap
+        self.canonical = "/" + ("a" * 260)          # the path itself
+        self.encoded = _encode_project_path(self.canonical)  # 261 chars, over the cap
 
     def test_short_names_never_reach_the_resolver(self):
         """The common case must not pay for the long-path fallback.
@@ -1074,13 +1112,31 @@ class TestLongFolderNameResolution(unittest.TestCase):
     def test_finds_the_truncated_hashed_folder(self):
         real = self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN] + "-gmu1b2"
         (self.projects / real).mkdir()
-        self.assertEqual(_resolve_long_folder_name(self.encoded), real)
+        # An existing folder wins over the computed name: the hash algorithm
+        # belongs to a Claude Code version we do not control.
+        self.assertEqual(_resolve_long_folder_name(self.encoded, self.canonical), real)
 
-    def test_falls_back_to_truncated_prefix_when_absent(self):
-        """Claude Code has not made the folder yet: stay within its length."""
-        got = _resolve_long_folder_name(self.encoded)
-        self.assertEqual(got, self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN])
-        self.assertLessEqual(len(got), MAX_PROJECT_FOLDER_NAME_LEN)
+    def test_computes_the_name_when_claude_has_not_made_it(self):
+        """The bare 200-char prefix is a name Claude Code never uses.
+
+        Earlier this returned the prefix alone, so capture wrote to one
+        folder and sessions landed in another -- the very split this module
+        exists to close, reintroduced by its own fallback. The hash IS
+        reproducible; see test_long_name_hash_matches_live_probe.
+        """
+        got = _resolve_long_folder_name(self.encoded, self.canonical)
+        self.assertTrue(got.startswith(self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN] + "-"))
+        self.assertRegex(got[MAX_PROJECT_FOLDER_NAME_LEN + 1:], r"^[0-9a-z]+$")
+
+    def test_long_name_hash_matches_live_probe(self):
+        """Pinned to an observed Claude Code folder, not to the algorithm.
+
+        Ran `claude -p` in /private/tmp/cr-probe2/<80 d>/<80 e>/<80 f> on
+        2026-09-19; Claude Code created a 207-character folder ending
+        "-gmu1b2".
+        """
+        cwd = "/private/tmp/cr-probe2/" + "d" * 80 + "/" + "e" * 80 + "/" + "f" * 80
+        self.assertEqual(_long_name_hash(cwd), "gmu1b2")
 
     def test_disambiguates_two_projects_sharing_a_prefix(self):
         """Two long paths with the same first 200 chars: ask the sessions."""
@@ -1089,13 +1145,13 @@ class TestLongFolderNameResolution(unittest.TestCase):
         (self.projects / other).mkdir()
         (self.projects / mine).mkdir()
         # `other` sorts first, so a naive pick would take it.
-        cwd = "/" + ("a" * 260)
+        cwd = self.canonical
         self.assertEqual(_encode_project_path(cwd), self.encoded)
         (self.projects / mine / "s.jsonl").write_text(
             json.dumps({"cwd": cwd}) + "\n", encoding="utf-8")
         (self.projects / other / "s.jsonl").write_text(
             json.dumps({"cwd": "/" + ("a" * 259) + "b"}) + "\n", encoding="utf-8")
-        self.assertEqual(_resolve_long_folder_name(self.encoded), mine)
+        self.assertEqual(_resolve_long_folder_name(self.encoded, self.canonical), mine)
 
 
 class TestLegacyFolderMigration(unittest.TestCase):
@@ -1243,6 +1299,35 @@ class TestLegacyFolderMigration(unittest.TestCase):
         migrate_legacy_project_folder(str(self.project))  # must not raise
         self.assertTrue(corrupt.exists())
         self.assertEqual(corrupt.read_text(encoding="utf-8"), "{not json")
+
+    def test_unreadable_current_queue_is_not_overwritten(self):
+        """Unreadable is not empty: writing legacy-only over it loses data."""
+        self.current.mkdir(parents=True, exist_ok=True)
+        cur = self.current / "learnings-queue.json"
+        cur.write_text("{truncated mid-write", encoding="utf-8")
+        self._write_legacy_queue([{"timestamp": "t", "message": "from legacy"}])
+        migrate_legacy_project_folder(str(self.project))
+        self.assertEqual(cur.read_text(encoding="utf-8"), "{truncated mid-write")
+        self.assertTrue((self.legacy / "learnings-queue.json").exists())
+
+    def test_non_utf8_legacy_queue_does_not_raise(self):
+        """UnicodeDecodeError is a ValueError, not a JSONDecodeError.
+
+        Uncaught, it propagated out of load_queue() and killed every capture
+        for that project on every prompt, forever - the file is never removed.
+        """
+        self.legacy.mkdir(parents=True, exist_ok=True)
+        (self.legacy / "learnings-queue.json").write_bytes(
+            '[{"message":"caf\u00e9"}]'.encode("cp1252"))
+        migrate_legacy_project_folder(str(self.project))  # must not raise
+
+    def test_reflect_initialized_marker_moves(self):
+        """Left behind, it keeps the legacy folder - and the bad grep - alive."""
+        self.legacy.mkdir(parents=True, exist_ok=True)
+        (self.legacy / ".reflect-initialized").touch()
+        migrate_legacy_project_folder(str(self.project))
+        self.assertTrue((self.current / ".reflect-initialized").exists())
+        self.assertFalse(self.legacy.exists())
 
     def test_symlinked_legacy_dir_is_left_alone(self):
         """is_dir() follows a link; moving files out of the target is wrong."""

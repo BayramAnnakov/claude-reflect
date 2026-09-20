@@ -1292,5 +1292,84 @@ class TestReviewGateRegressions(unittest.TestCase):
                 self.assertFalse(self._captured(text))
 
 
+
+class TestFableGateRegressions(unittest.TestCase):
+    """Third-reviewer findings. Every string here was captured at 8dc9db4,
+    dropped by #37/#44, and is restored.
+
+    The shape that mattered: an allowlist of continuations after "no" drops
+    project RULES ("no semicolons in this codebase") while still admitting
+    benign replies, because "it", "this", "you" and "i" are exactly the words
+    a benign reply opens with. Detection favours recall now; the semantic
+    pass at /reflect time is what filters.
+    """
+
+    def _t(self, text):
+        return detect_patterns(text)[0]
+
+    def test_project_rules_after_no_are_captured(self):
+        for text in [
+            "no tabs, use spaces",
+            "no semicolons in this codebase",
+            "no emojis in commit messages",
+            "no mocks - hit the real database in tests",
+            "no comments in the code",
+            "no just revert it",
+            "no always run the tests first",
+            "no never commit directly to main",
+            "no wrong file",
+            "no - use pnpm",
+            "No pnpm here, this repo is on yarn",
+            "no typescript any, ever",
+            "no revert that",
+            "no should be snake_case",
+            "no in the backend folder",
+            "no with venv",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNotNone(self._t(text))
+
+    def test_benign_replies_after_no_are_rejected(self):
+        for text in [
+            "no it works now thanks",
+            "no this looks good",
+            "no you can go ahead",
+            "no i think we're done for today",
+            "no idea",
+            "no dialog appeared",
+            "no rush on this",
+            "no results came back",
+            "no changes were applied",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNone(self._t(text))
+
+    def test_slash_guard_does_not_eat_absolute_paths(self):
+        """startswith("/") also ate paths, breaking the remember: contract."""
+        self.assertEqual(
+            self._t("/Users/bob/app/src/gen.ts - remember: never edit generated files"),
+            "explicit")
+        self.assertIsNotNone(self._t("/etc/hosts is wrong, use 127.0.0.1 not localhost"))
+        self.assertIsNotNone(self._t("// never use var, use const not let"))
+
+    def test_actual_slash_commands_still_rejected(self):
+        for text in [
+            "/loop use the artifact URL not the run URL",
+            "/reflect --dry-run perfect! check the queue",
+            "/ia:full-review don't use any",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNone(self._t(text))
+
+    def test_praise_containing_please_anywhere_survives(self):
+        for text in [
+            "perfect! always structure the tests like that please",
+            "great approach, please keep using small focused commits",
+            "that's exactly what I wanted - we need to do it this way every time",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(self._t(text), "positive")
+
+
 if __name__ == "__main__":
     unittest.main()

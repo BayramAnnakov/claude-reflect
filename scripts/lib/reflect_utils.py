@@ -7,6 +7,7 @@ import json
 import re
 import os
 import sys
+import unicodedata
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
@@ -105,7 +106,7 @@ def load_queue_at(path: Path) -> List[Dict[str, Any]]:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
         return loaded if isinstance(loaded, list) else []
-    except (json.JSONDecodeError, IOError, OSError):
+    except (ValueError, IOError, OSError):
         return []
 
 
@@ -151,7 +152,7 @@ def migrate_global_queue() -> None:
 
     try:
         items = json.loads(global_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError):
+    except (ValueError, IOError):
         return
 
     if not items:
@@ -180,7 +181,7 @@ def migrate_global_queue() -> None:
                     existing = json.loads(
                         project_queue_path.read_text(encoding="utf-8")
                     )
-                except (json.JSONDecodeError, IOError):
+                except (ValueError, IOError):
                     existing = []
             existing.extend(project_items)
             project_queue_path.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +213,7 @@ def get_cleanup_period_days() -> Optional[int]:
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         return settings.get("cleanupPeriodDays")
-    except (json.JSONDecodeError, IOError):
+    except (ValueError, IOError):
         return None
 
 
@@ -774,10 +775,23 @@ def get_project_folder_name(project_dir: Optional[str] = None) -> str:
     /Users/bob/myapp → -Users-bob-myapp
     """
     project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
-    encoded = _encode_project_path(str(project_path))
+    # Claude Code normalizes the resolved cwd to NFC before encoding. macOS
+    # hands back NFD for anything Finder or unzip created, and the two differ
+    # in LENGTH -- "café" is 4 code points in NFC and 5 in NFD, so the
+    # decomposed form emits one extra dash and names a folder that does not
+    # exist. Confirmed by probe: a directory stored NFD as
+    # "Мой проект café" got a 35-character folder, not 37.
+    # Claude Code normalizes the resolved cwd to NFC before encoding. macOS
+    # hands back NFD for anything Finder or unzip created, and the two differ
+    # in LENGTH -- "café" is 4 code points composed and 5 decomposed - so the
+    # decomposed form emits an extra dash and names a folder that does not
+    # exist. Confirmed by probe: a directory stored NFD as "Мой проект café"
+    # got a 35-character folder, not 37.
+    canonical = unicodedata.normalize("NFC", str(project_path))
+    encoded = _encode_project_path(canonical)
     if len(encoded) <= MAX_PROJECT_FOLDER_NAME_LEN:
         return encoded
-    return _resolve_long_folder_name(encoded)
+    return _resolve_long_folder_name(encoded, canonical)
 
 
 def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
@@ -832,7 +846,7 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
         readable = True
         try:
             legacy_items = json.loads(legacy_queue.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, IOError, OSError):
+        except (ValueError, IOError, OSError):
             legacy_items, readable = [], False
         if not isinstance(legacy_items, list):
             legacy_items, readable = [], False
@@ -842,9 +856,14 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
             if current_queue.is_file():
                 try:
                     loaded = json.loads(current_queue.read_text(encoding="utf-8"))
-                    existing = loaded if isinstance(loaded, list) else []
-                except (json.JSONDecodeError, IOError, OSError):
-                    existing = []
+                except (ValueError, IOError, OSError):
+                    # Unreadable is not empty. Treating it as [] would write
+                    # the legacy items OVER the user's only copy -- the same
+                    # principle applied to the legacy file one block up.
+                    return
+                if not isinstance(loaded, list):
+                    return
+                existing = loaded
             seen = {_queue_item_key(i) for i in existing}
             merged = existing + [
                 i for i in legacy_items
@@ -886,6 +905,20 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
         except OSError:
             pass  # still holds files we did not move
 
+    # The marker is ours as well. Left behind it keeps the legacy folder
+    # alive, which keeps `ls ~/.claude/projects | grep <basename>` in
+    # /reflect resolving to the wrong folder -- so --scan-history keeps
+    # listing zero sessions and the `tr '_' '-'` fallback never fires,
+    # because the first grep never fails.
+    legacy_marker = legacy_dir / ".reflect-initialized"
+    if legacy_marker.is_file():
+        try:
+            current_dir.mkdir(parents=True, exist_ok=True)
+            (current_dir / ".reflect-initialized").touch()
+            legacy_marker.unlink()
+        except OSError:
+            pass
+
     # Remove the stale folder only when nothing is left in it.
     try:
         legacy_dir.rmdir()
@@ -906,13 +939,43 @@ def _queue_item_key(item: Any) -> Tuple[str, str]:
 MAX_PROJECT_FOLDER_NAME_LEN = 200
 
 
-def _resolve_long_folder_name(encoded: str) -> str:
-    """Find the truncated-and-hashed folder Claude Code made for a long path.
+def _long_name_hash(canonical_path: str) -> str:
+    """Reproduce Claude Code's suffix for an over-long folder name.
 
-    The hash is not reproducible from here, so rather than guess it we look
-    for the folder that already exists. Only reached for paths that encode to
-    more than MAX_PROJECT_FOLDER_NAME_LEN characters, so the common case pays
-    nothing for this.
+    A djb2-style rolling hash over the UTF-16 code units of the NFC-resolved
+    cwd (not of the encoded name), coerced to a signed 32-bit int at each
+    step the way JavaScript's ``|0`` does, then ``Math.abs`` in base 36.
+
+    Verified against a live probe: the 265-character path
+    /private/tmp/cr-probe2/<80 d>/<80 e>/<80 f> produced the suffix
+    "gmu1b2", which this reproduces exactly.
+    """
+    acc = 0
+    units = canonical_path.encode("utf-16-le", errors="surrogatepass")
+    for i in range(0, len(units) - 1, 2):
+        code = units[i] | (units[i + 1] << 8)
+        acc = (acc << 5) - acc + code
+        acc = ((acc + 0x80000000) % 0x100000000) - 0x80000000  # JS  |0
+    acc = abs(acc)
+    if acc == 0:
+        return "0"
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while acc:
+        out = digits[acc % 36] + out
+        acc //= 36
+    return out
+
+
+def _resolve_long_folder_name(encoded: str, canonical_path: str) -> str:
+    """Name the truncated-and-hashed folder Claude Code uses for a long path.
+
+    Claude Code truncates to MAX_PROJECT_FOLDER_NAME_LEN and appends
+    "-<hash>". We can compute that hash (see _long_name_hash), but the
+    algorithm is an implementation detail of a version we do not control, so
+    an existing folder on disk wins over the computed name. The computed name
+    is the fallback for a project Claude Code has not written yet, which is
+    strictly better than the bare prefix -- a name it would never use.
     """
     prefix = encoded[:MAX_PROJECT_FOLDER_NAME_LEN]
     projects_dir = get_claude_dir() / "projects"
@@ -927,10 +990,8 @@ def _resolve_long_folder_name(encoded: str) -> str:
     if len(matches) == 1:
         return matches[0]
     if not matches:
-        # Claude Code has not created it yet. Use the truncated form so we at
-        # least stay within the length it will use, rather than a name that
-        # cannot ever match.
-        return prefix
+        # Claude Code has not created it yet: compute the name it will use.
+        return prefix + "-" + _long_name_hash(canonical_path)
     # Two projects sharing a 200-character prefix. Ask the session files which
     # folder is ours rather than guessing.
     for name in matches:
@@ -1099,7 +1160,7 @@ def load_queue(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError):
+    except (ValueError, IOError):
         return []
 
 
@@ -1155,30 +1216,17 @@ POSITIVE_PATTERNS = [
 # - Users can use explicit markers like "remember:" in any language
 #
 CORRECTION_PATTERNS = [
-    (r"^no[,.]+", "no,", True),  # Starts with "no," / "no." - correction opener
-    # Bare "no " needs an addressee or clause marker after it, otherwise plain
-    # statements of fact ("no dialog appeared", "no idea", "no problem") match.
-    (
-        r"^no\s+(?:it|its|it's|that|this|these|those|i|i'm|you|you're|we|we're|they|he|she"
-        r"|do|don'?t|doesn'?t|didn'?t|not|use|using|need|keep|make|put|let'?s"
-        r"|bro|man|mate|dude|sorry|wait|the\s+other|the\s+first|the\s+second)\b",
-        "no-addressed",
-        True,
-    ),
-    # "no python, use typescript" / "no classes - use functions". The
-    # allowlist above is a closed set of pronouns and verbs, so it drops the
-    # very common "no <thing>, <instruction>" correction. Requiring the comma
-    # or dash plus a following clause keeps "no idea" and "no dialog
-    # appeared" out.
-    (r"^no\s+[^\s,]{1,24}\s*[,\u2014\u2013-]\s+\S", "no-X-then-clause", True),
-    # "no bun use npm" - same shape without the punctuation, so require an
-    # explicit instruction verb rather than any word.
-    (
-        r"^no\s+[^\s,]{1,24}\s+"
-        r"(?:use|using|make|do|put|keep|try|switch|prefer|run|call|go\s+with)\b",
-        "no-X-imperative",
-        True,
-    ),
+    # Deliberately broad. An allowlist of continuations was tried and it
+    # dropped the highest-value captures this plugin exists for -- project
+    # rules like "no semicolons in this codebase", "no emojis in commit
+    # messages", "no typescript any, ever" -- while still admitting benign
+    # replies, because "it", "this", "you" and "i" are exactly the words that
+    # open one. The benign shapes are denied by name in NON_CORRECTION_PHRASES
+    # instead, and anything that slips past is caught by the semantic pass at
+    # /reflect time. A false positive costs one queue line; a false negative
+    # costs the learning.
+    (r"^no[,.!:;\u2014\u2013-]+\s*\S", "no,", True),
+    (r"^no\s+\S", "no-bare", True),
     (r"^don't\b|^do not\b", "don't", True),  # Starts with don't/do not
     (r"^stop\b|^never\b", "stop/never", True),  # Starts with stop/never
     (r"that's (wrong|incorrect)|that is (wrong|incorrect)", "that's-wrong", True),
@@ -1226,6 +1274,19 @@ NON_CORRECTION_PHRASES = [
     r"^don't\s+mind",        # "Don't mind" - agreement
     r"^don't\s+bother",      # "Don't bother" - polite decline
     r"^never\s+mind",        # "Never mind" - dismissal
+    # Answers to a question, not corrections. These are why the "no"
+    # patterns above need a deny-list at all.
+    r"^no\s+idea\b",
+    r"^no\s+(?:it|that|this|we|i|you|they)\s+"
+    r"(?:works?|worked|looks?|seems?|sounds?|reads?)\b",
+    r"^no\s+(?:it|that|this)\s+(?:'s|is|was)\s+(?:fine|good|ok|okay|right|correct)\b",
+    r"^no\s+(?:i|we)\s+(?:think|guess|believe|reckon)\b",
+    r"^no\s+(?:you|we|i)\s+(?:can|could|should)\s+go\s+ahead\b",
+    r"^no\s+(?:i|we)(?:'m|'re| am| are)?\s+(?:all\s+)?(?:good|done|set|fine)\b",
+    # Reports of absence: "no dialog appeared", "no changes were applied".
+    r"^no\s+[\w-]+\s+(?:appeared|happened|occurred|showed|showed\s+up|returned"
+    r"|existed|came|come|changed|matched|was|were|has|have|had)\b",
+    r"^no\s+(?:rush|hurry|pressure|problem|stress)\b",
     r"^stop\s+worrying",     # "Stop worrying" - reassurance
 ]
 
@@ -1274,6 +1335,8 @@ MAX_CAPTURE_PROMPT_LENGTH = 500
 # feedback that merely contains "please", "we need to" or "now I". A pivot
 # has to introduce a NEW instruction, so require an imperative after it
 # rather than any of those words appearing anywhere in the message.
+_SLASH_COMMAND_RE = re.compile(r"/[A-Za-z][\w.-]*(?::[\w.-]+)?(?:\s|$)")
+
 FORWARD_PIVOT_PATTERNS = [
     r"\b(now|next)[, ]+let'?s\b",
     r"\b(now|next)[, ]+(we|i)\s+(need to|should|have to|must|will)\b",
@@ -1313,7 +1376,13 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
     # invocations, never user feedback, so they should never enter the
     # queue. This is the FIRST check because no downstream pattern
     # (explicit, positive, correction, guardrail) should fire on them.
-    if text.lstrip().startswith("/"):
+    # A slash COMMAND, not any leading slash. The earlier startswith("/")
+    # also ate absolute paths and comments -- "/etc/hosts is wrong, use
+    # 127.0.0.1 not localhost" and "/Users/bob/gen.ts - remember: never edit
+    # generated files" both vanished, the second one breaking the documented
+    # promise that "remember:" is always processed. A command is one token of
+    # word characters (optionally plugin:name) with no second slash.
+    if _SLASH_COMMAND_RE.match(text.lstrip()):
         return (None, "", 0.0, "correction", 90)
 
     # Too short to be actionable (e.g. "OK", "好", "yes")
