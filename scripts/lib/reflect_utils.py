@@ -667,7 +667,20 @@ def _encode_project_path(path_str: str) -> str:
        Windows drive colon survived the old encoder and made ``mkdir`` raise
        ``WinError 267``, which the hook's top-level handler swallowed.
     """
-    return re.sub(r"[^A-Za-z0-9]", "-", path_str)
+    encoded = []
+    for ch in path_str:
+        if ch.isascii() and ch.isalnum():
+            encoded.append(ch)
+        else:
+            # Claude Code does this with a JavaScript regex that carries no /u
+            # flag, so it matches per UTF-16 CODE UNIT, not per character. A
+            # character outside the BMP -- an emoji in a folder name -- is a
+            # surrogate pair there and becomes TWO dashes. Measured against a
+            # live probe: "/private/tmp/cr-probe2/emoji \U0001f600 x" produced
+            # "-private-tmp-cr-probe2-emoji----x", four dashes for
+            # space + emoji + space.
+            encoded.append("-" * (len(ch.encode("utf-16-le")) // 2))
+    return "".join(encoded)
 
 
 def _legacy_encode_project_path(path_str: str) -> str:
@@ -689,7 +702,10 @@ def get_project_folder_name(project_dir: Optional[str] = None) -> str:
     /Users/bob/myapp → -Users-bob-myapp
     """
     project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
-    return _encode_project_path(str(project_path))
+    encoded = _encode_project_path(str(project_path))
+    if len(encoded) <= MAX_PROJECT_FOLDER_NAME_LEN:
+        return encoded
+    return _resolve_long_folder_name(encoded)
 
 
 def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
@@ -785,6 +801,58 @@ def _queue_item_key(item: Any) -> Tuple[str, str]:
     if not isinstance(item, dict):
         return ("", "")
     return (str(item.get("timestamp", "")), str(item.get("message", "")))
+
+
+# Claude Code caps a project folder name at this many characters; past it the
+# name is truncated to exactly this length and a short hash is appended, e.g.
+# "<200 chars>-gmu1b2". Measured against a live probe on 2026-09-19.
+MAX_PROJECT_FOLDER_NAME_LEN = 200
+
+
+def _resolve_long_folder_name(encoded: str) -> str:
+    """Find the truncated-and-hashed folder Claude Code made for a long path.
+
+    The hash is not reproducible from here, so rather than guess it we look
+    for the folder that already exists. Only reached for paths that encode to
+    more than MAX_PROJECT_FOLDER_NAME_LEN characters, so the common case pays
+    nothing for this.
+    """
+    prefix = encoded[:MAX_PROJECT_FOLDER_NAME_LEN]
+    projects_dir = get_claude_dir() / "projects"
+    try:
+        # The encoding leaves only [A-Za-z0-9-], so the prefix is glob-safe.
+        matches = sorted(
+            d.name for d in projects_dir.glob(prefix + "-*") if d.is_dir()
+        )
+    except OSError:
+        return encoded
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        # Claude Code has not created it yet. Use the truncated form so we at
+        # least stay within the length it will use, rather than a name that
+        # cannot ever match.
+        return prefix
+    # Two projects sharing a 200-character prefix. Ask the session files which
+    # folder is ours rather than guessing.
+    for name in matches:
+        for session in (projects_dir / name).glob("*.jsonl"):
+            try:
+                with session.open(encoding="utf-8", errors="replace") as fh:
+                    for line_no, line in enumerate(fh):
+                        if line_no > 8:
+                            break
+                        try:
+                            cwd = json.loads(line).get("cwd")
+                        except (json.JSONDecodeError, AttributeError):
+                            continue
+                        if cwd and _encode_project_path(str(cwd)) == encoded:
+                            return name
+            except (IOError, OSError):
+                continue
+            break
+    return matches[0]
 
 
 def get_auto_memory_path(project_dir: Optional[str] = None) -> Path:

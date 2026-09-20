@@ -24,6 +24,8 @@ from lib.reflect_utils import (
     _encode_project_path,
     _legacy_encode_project_path,
     migrate_legacy_project_folder,
+    _resolve_long_folder_name,
+    MAX_PROJECT_FOLDER_NAME_LEN,
     find_claude_files,
     suggest_claude_file,
     get_project_folder_name,
@@ -960,6 +962,23 @@ class TestProjectPathEncoding(unittest.TestCase):
             "-private-tmp-cr-enc-probe------------v2-test",
         )
 
+    def test_astral_char_becomes_two_dashes(self):
+        """Pinned to a live probe. Claude Code's regex has no /u flag.
+
+        Ran `claude -p` in "/private/tmp/cr-probe2/emoji \U0001f600 x" on
+        2026-09-19; the folder was "-private-tmp-cr-probe2-emoji----x".
+        Four dashes for space + emoji + space, so the emoji counted as two
+        UTF-16 code units. Encoding per character would give three.
+        """
+        self.assertEqual(
+            _encode_project_path("/private/tmp/cr-probe2/emoji \U0001f600 x"),
+            "-private-tmp-cr-probe2-emoji----x",
+        )
+
+    def test_bmp_non_ascii_stays_one_dash(self):
+        """A BMP character is a single UTF-16 unit, so still one dash."""
+        self.assertEqual(_encode_project_path("/a/\u0416/b"), "-a---b")
+
     def test_case_is_preserved(self):
         self.assertEqual(_encode_project_path("/Users/Bob/MyApp"), "-Users-Bob-MyApp")
 
@@ -973,6 +992,74 @@ class TestProjectPathEncoding(unittest.TestCase):
         """No migration should fire for a path with no special characters."""
         path = "/Users/bob/myapp"
         self.assertEqual(_legacy_encode_project_path(path), _encode_project_path(path))
+
+
+class TestLongFolderNameResolution(unittest.TestCase):
+    """Claude Code truncates a long folder name and appends a hash.
+
+    Measured 2026-09-19: a path encoding to 265 characters produced a
+    207-character folder -- the first 200 characters, then "-gmu1b2". The
+    hash is not reproducible here, so we locate the existing folder instead
+    of trying to recompute it. Getting this wrong is the same silent failure
+    the encoder fix exists to close: queue in one folder, sessions in another.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.claude_dir = Path(self.tmp.name) / ".claude"
+        self.projects = self.claude_dir / "projects"
+        self.projects.mkdir(parents=True)
+        patcher = patch("lib.reflect_utils.get_claude_dir", return_value=self.claude_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.encoded = "-" + ("a" * 260)   # 261 chars, over the 200 cap
+
+    def test_short_names_never_reach_the_resolver(self):
+        """The common case must not pay for the long-path fallback."""
+        self.assertEqual(get_project_folder_name("/Users/bob/myapp"), "-Users-bob-myapp")
+        with patch("lib.reflect_utils._resolve_long_folder_name") as resolver:
+            get_project_folder_name("/Users/bob/myapp")
+            resolver.assert_not_called()
+
+    def test_get_project_folder_name_uses_the_resolution(self):
+        """Through the public entry point, not just the helper.
+
+        Without this the resolver can be unwired and every other test in this
+        class still passes.
+        """
+        deep = "/" + "/".join("seg" + str(i) + "x" * 20 for i in range(12))
+        encoded = _encode_project_path(str(Path(deep).resolve()))
+        self.assertGreater(len(encoded), MAX_PROJECT_FOLDER_NAME_LEN)
+        real = encoded[:MAX_PROJECT_FOLDER_NAME_LEN] + "-q7wz1p"
+        (self.projects / real).mkdir()
+        self.assertEqual(get_project_folder_name(deep), real)
+
+    def test_finds_the_truncated_hashed_folder(self):
+        real = self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN] + "-gmu1b2"
+        (self.projects / real).mkdir()
+        self.assertEqual(_resolve_long_folder_name(self.encoded), real)
+
+    def test_falls_back_to_truncated_prefix_when_absent(self):
+        """Claude Code has not made the folder yet: stay within its length."""
+        got = _resolve_long_folder_name(self.encoded)
+        self.assertEqual(got, self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN])
+        self.assertLessEqual(len(got), MAX_PROJECT_FOLDER_NAME_LEN)
+
+    def test_disambiguates_two_projects_sharing_a_prefix(self):
+        """Two long paths with the same first 200 chars: ask the sessions."""
+        other = self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN] + "-aaaaaa"
+        mine = self.encoded[:MAX_PROJECT_FOLDER_NAME_LEN] + "-zzzzzz"
+        (self.projects / other).mkdir()
+        (self.projects / mine).mkdir()
+        # `other` sorts first, so a naive pick would take it.
+        cwd = "/" + ("a" * 260)
+        self.assertEqual(_encode_project_path(cwd), self.encoded)
+        (self.projects / mine / "s.jsonl").write_text(
+            json.dumps({"cwd": cwd}) + "\n", encoding="utf-8")
+        (self.projects / other / "s.jsonl").write_text(
+            json.dumps({"cwd": "/" + ("a" * 259) + "b"}) + "\n", encoding="utf-8")
+        self.assertEqual(_resolve_long_folder_name(self.encoded), mine)
 
 
 class TestLegacyFolderMigration(unittest.TestCase):
