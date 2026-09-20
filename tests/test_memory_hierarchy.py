@@ -988,9 +988,10 @@ class TestProjectPathEncoding(unittest.TestCase):
         inside the UserPromptSubmit hook, which is precisely the silent
         capture failure this module exists to prevent.
         """
-        path = os.fsdecode(b"/Users/bob/caf\xe9dir")
-        if "\udce9" not in path:
-            self.skipTest("filesystem encoding does not surrogate-escape here")
+        # Construct the surrogate directly rather than via os.fsdecode, whose
+        # behaviour for an undecodable byte differs between platforms. What
+        # matters is that the encoder survives one, however it got there.
+        path = "/Users/bob/caf\udce9dir"
         self.assertEqual(_encode_project_path(path), "-Users-bob-caf-dir")
 
     def test_case_is_preserved(self):
@@ -1001,6 +1002,19 @@ class TestProjectPathEncoding(unittest.TestCase):
         path = "/Users/bob/my_app"
         self.assertNotEqual(_legacy_encode_project_path(path), _encode_project_path(path))
         self.assertEqual(_legacy_encode_project_path(path), "-Users-bob-my_app")
+
+    def test_legacy_encoder_is_illegal_on_windows(self):
+        """Why there is nothing to migrate on Windows.
+
+        The pre-3.2 encoder kept the drive colon, so every Windows project
+        produced a folder name mkdir refuses (WinError 267). The hook's
+        top-level handler swallowed it, so capture failed silently and no
+        queue was ever written. The new encoder must not reproduce that.
+        """
+        win = r"C:\Users\bob\app"
+        self.assertIn(":", _legacy_encode_project_path(win))
+        self.assertNotIn(":", _encode_project_path(win))
+        self.assertEqual(_encode_project_path(win), "C--Users-bob-app")
 
     def test_legacy_encoder_agrees_on_plain_paths(self):
         """No migration should fire for a path with no special characters."""
@@ -1096,8 +1110,16 @@ class TestLegacyFolderMigration(unittest.TestCase):
         self.project = Path(self.tmp.name) / "work" / "my_app"
         self.project.mkdir(parents=True)
         resolved = str(self.project.resolve())
-        self.legacy = self.projects / _legacy_encode_project_path(resolved)
-        self.current = self.projects / _encode_project_path(resolved)
+        legacy_name = _legacy_encode_project_path(resolved)
+        if any(c in legacy_name for c in ':*?"<>|'):
+            # The pre-3.2 encoder left the drive colon in, so on Windows its
+            # folder name is illegal and mkdir raised WinError 267 -- which is
+            # the bug, and means no legacy folder can exist there to migrate.
+            # test_legacy_encoder_is_illegal_on_windows covers that claim on
+            # every platform.
+            self.skipTest("pre-3.2 encoder could not create a folder here")
+        self.legacy = self.projects / legacy_name
+        self.current = self.projects / get_project_folder_name(resolved)
         self.assertNotEqual(self.legacy, self.current)
         patcher = patch("lib.reflect_utils.get_claude_dir", return_value=self.claude_dir)
         patcher.start()
