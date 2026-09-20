@@ -20,12 +20,7 @@ allowed-tools: Bash
 3. If user confirms (y/yes):
    - Clear the project queue:
    ```bash
-   python3 -c "
-   import sys
-   sys.path.insert(0, '${CLAUDE_PLUGIN_ROOT}/scripts')
-   from lib.reflect_utils import save_queue
-   save_queue([])
-   "
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/clear_queue.py"
    ```
    - Output: "Discarded [count] learnings. Queue cleared."
 

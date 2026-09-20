@@ -64,6 +64,71 @@ def get_queue_path(project_dir: Optional[str] = None) -> Path:
         return Path.home() / ".claude" / "learnings-queue.json"
 
 
+def project_dir_from_transcript(transcript_path: Optional[str]) -> Optional[Path]:
+    """The project folder Claude Code is using, taken from the hook payload.
+
+    Every hook payload carries ``transcript_path``, and the transcript lives
+    at ``~/.claude/projects/<folder>/<session>.jsonl``. Its parent directory
+    is therefore the folder Claude Code itself chose -- authoritative, with
+    nothing to reproduce.
+
+    This matters because the encoding is not simple: every non-alphanumeric
+    character becomes a dash, the substitution counts UTF-16 code units so an
+    emoji becomes two dashes, and a name over 200 characters is truncated and
+    given a hash we cannot recompute. Reading the answer beats deriving it.
+
+    Returns None when the field is missing or does not sit under
+    ``<claude dir>/projects/``, so the caller falls back to the encoder.
+    """
+    if not transcript_path:
+        return None
+    try:
+        parent = Path(transcript_path).expanduser().parent
+        if parent.parent.name != "projects":
+            return None
+        if not parent.name:
+            return None
+    except (OSError, ValueError):
+        return None
+    return parent
+
+
+def queue_path_for_folder(project_folder: Path) -> Path:
+    """Queue file inside an already-resolved project folder."""
+    return project_folder / "learnings-queue.json"
+
+
+def load_queue_at(path: Path) -> List[Dict[str, Any]]:
+    """Read a queue from an explicit path. No migration, no encoding."""
+    if not path.exists():
+        return []
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, list) else []
+    except (json.JSONDecodeError, IOError, OSError):
+        return []
+
+
+def save_queue_at(path: Path, items: List[Dict[str, Any]]) -> None:
+    """Write a queue to an explicit path, atomically.
+
+    A plain write_text truncates first, so a crash or a concurrent reader
+    between truncate and write sees an empty or half-written file -- which
+    the loaders treat as "no learnings" and the migration used to treat as
+    "safe to delete".
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def get_global_queue_path() -> Path:
     """Get path to the legacy global learnings queue file.
 
@@ -734,7 +799,10 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
         return
 
     legacy_name = _legacy_encode_project_path(str(project_path))
-    current_name = _encode_project_path(str(project_path))
+    # Resolve through get_project_folder_name, not _encode_project_path: for a
+    # path over 200 characters those differ, and migrating into a third name
+    # would recreate the split this function exists to heal.
+    current_name = get_project_folder_name(str(project_path))
     if legacy_name == current_name:
         return
 
@@ -742,17 +810,33 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
     legacy_dir = projects_dir / legacy_name
     if not legacy_dir.is_dir():
         return
+    if legacy_dir.is_symlink():
+        # is_dir() follows the link, and moving files out of wherever it
+        # points is not what "migrate our own folder" means.
+        return
 
     current_dir = projects_dir / current_name
 
     # Merge the queue, oldest first, dropping items already carried over.
     legacy_queue = legacy_dir / "learnings-queue.json"
+    current_queue_probe = current_dir / "learnings-queue.json"
+    try:
+        if (legacy_queue.exists() and current_queue_probe.exists()
+                and legacy_queue.resolve() == current_queue_probe.resolve()):
+            # Both names point at one file. Merging it into itself and then
+            # unlinking "the old one" would delete the queue we just wrote.
+            return
+    except OSError:
+        return
     if legacy_queue.is_file():
+        readable = True
         try:
             legacy_items = json.loads(legacy_queue.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, IOError, OSError):
-            legacy_items = []
-        if isinstance(legacy_items, list) and legacy_items:
+            legacy_items, readable = [], False
+        if not isinstance(legacy_items, list):
+            legacy_items, readable = [], False
+        if legacy_items:
             current_queue = current_dir / "learnings-queue.json"
             existing: List[Dict[str, Any]] = []
             if current_queue.is_file():
@@ -767,16 +851,17 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
                 if isinstance(i, dict) and _queue_item_key(i) not in seen
             ]
             try:
-                current_dir.mkdir(parents=True, exist_ok=True)
-                current_queue.write_text(
-                    json.dumps(merged, indent=2), encoding="utf-8"
-                )
+                save_queue_at(current_queue, merged)
             except (IOError, OSError):
                 return
-        try:
-            legacy_queue.unlink()
-        except OSError:
-            pass
+        if readable:
+            # Only discard the old file once its contents are safely in the
+            # new one. A queue we could not parse is left where it is -- it
+            # is the user's only copy, and deleting it is not our call.
+            try:
+                legacy_queue.unlink()
+            except OSError:
+                pass
 
     # Move auto-memory files that the correct folder does not already have.
     legacy_memory = legacy_dir / "memory"
@@ -785,7 +870,12 @@ def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
         for md_file in sorted(legacy_memory.glob("*.md")):
             target = current_memory / md_file.name
             if target.exists():
-                continue
+                # Do not clobber, but do not strand it either: the folder
+                # would survive forever and be re-globbed on every prompt.
+                stamp = md_file.stem + ".from-legacy" + md_file.suffix
+                target = current_memory / stamp
+                if target.exists():
+                    continue
             try:
                 current_memory.mkdir(parents=True, exist_ok=True)
                 md_file.replace(target)
@@ -998,10 +1088,8 @@ def load_queue(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
 
 
 def save_queue(items: List[Dict[str, Any]], project_dir: Optional[str] = None) -> None:
-    """Save learnings queue to the project-scoped file."""
-    path = get_queue_path(project_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    """Save learnings queue to the project-scoped file, atomically."""
+    save_queue_at(get_queue_path(project_dir), items)
 
 
 def append_to_queue(item: Dict[str, Any], project_dir: Optional[str] = None) -> None:
@@ -1059,6 +1147,20 @@ CORRECTION_PATTERNS = [
         r"|do|don'?t|doesn'?t|didn'?t|not|use|using|need|keep|make|put|let'?s"
         r"|bro|man|mate|dude|sorry|wait|the\s+other|the\s+first|the\s+second)\b",
         "no-addressed",
+        True,
+    ),
+    # "no python, use typescript" / "no classes - use functions". The
+    # allowlist above is a closed set of pronouns and verbs, so it drops the
+    # very common "no <thing>, <instruction>" correction. Requiring the comma
+    # or dash plus a following clause keeps "no idea" and "no dialog
+    # appeared" out.
+    (r"^no\s+[^\s,]{1,24}\s*[,\u2014\u2013-]\s+\S", "no-X-then-clause", True),
+    # "no bun use npm" - same shape without the punctuation, so require an
+    # explicit instruction verb rather than any word.
+    (
+        r"^no\s+[^\s,]{1,24}\s+"
+        r"(?:use|using|make|do|put|keep|try|switch|prefer|run|call|go\s+with)\b",
+        "no-X-imperative",
         True,
     ),
     (r"^don't\b|^do not\b", "don't", True),  # Starts with don't/do not
@@ -1150,11 +1252,17 @@ MAX_CAPTURE_PROMPT_LENGTH = 500
 # and NON_CORRECTION_PHRASES (which neutralize correction openers like
 # "no problem"). This list neutralizes positive openers when the message
 # body is a fresh request rather than reflection on past behavior.
+# Narrow on purpose. A broader version rejected ordinary praise: "Nailed it!
+# Please keep using this pattern", "that's exactly right, we need to remember
+# this", "Perfect... Now I understand why it fails" -- all retrospective
+# feedback that merely contains "please", "we need to" or "now I". A pivot
+# has to introduce a NEW instruction, so require an imperative after it
+# rather than any of those words appearing anywhere in the message.
 FORWARD_PIVOT_PATTERNS = [
-    r"\b(now|next)[, ]+(let'?s|we|i)\b",        # "Now let's", "Next, we", "Now I"
+    r"\b(now|next)[, ]+let'?s\b",
+    r"\b(now|next)[, ]+(we|i)\s+(need to|should|have to|must|will)\b",
     r"\blet'?s (add|do|build|move|update|change|fix|implement)\b",
-    r"\b(go ahead and|can you|could you|please)\b",
-    r"\bwe need to\b",
+    r"\bgo ahead and\s+\w+",
 ]
 
 # Maximum message length for weak patterns (structural heuristic)

@@ -1231,5 +1231,66 @@ class TestCaptureLearningFiltering(unittest.TestCase):
         self.assertFalse(should_include_message(msg))
 
 
+
+class TestReviewGateRegressions(unittest.TestCase):
+    """Cases the two-vendor review gate found after #37 and #44 were merged.
+
+    Both reviewers independently produced prompts a real user types that the
+    new guards dropped. Each string below is one of those, kept verbatim so a
+    future tightening of the same regexes fails here instead of in someone's
+    queue.
+    """
+
+    def _captured(self, text):
+        return detect_patterns(text)[0] is not None
+
+    def test_no_thing_comma_instruction_is_a_correction(self):
+        for text in [
+            "no python, use typescript",
+            "no async, make it sync",
+            "no GPT-5, use Claude",
+            "no classes \u2014 use functions",
+            "No Claude, use ripgrep",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(self._captured(text))
+
+    def test_no_thing_imperative_without_punctuation(self):
+        self.assertTrue(self._captured("no bun use npm"))
+
+    def test_bare_no_statements_still_rejected(self):
+        """The reason #44 narrowed this in the first place."""
+        for text in [
+            "no dialog appeared",
+            "no idea",
+            "no problem",
+            "no worries",
+            "no need",
+            "no changes were applied",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(self._captured(text))
+
+    def test_praise_containing_please_or_we_need_to_survives(self):
+        """A forward-pivot guard must not eat retrospective feedback."""
+        for text in [
+            "Nailed it! Please keep using this pattern for the other modules.",
+            "that's exactly right, we need to remember this next time",
+            "Perfect, that's exactly the GDU approach. Now I understand why it fails.",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(detect_patterns(text)[0], "positive")
+
+    def test_real_task_pivots_still_rejected(self):
+        """What #37 was actually aiming at."""
+        for text in [
+            "Perfect! Now let's add the new column",
+            "Perfect! Now we need to add the column",
+            "/loop use the artifact URL not the run URL",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(self._captured(text))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ from lib.reflect_utils import (
     _legacy_encode_project_path,
     migrate_legacy_project_folder,
     _resolve_long_folder_name,
+    save_queue_at,
     MAX_PROJECT_FOLDER_NAME_LEN,
     find_claude_files,
     suggest_claude_file,
@@ -1134,6 +1135,47 @@ class TestLegacyFolderMigration(unittest.TestCase):
         self.assertEqual(
             (self.current / "memory" / "tool-usage.md").read_text(encoding="utf-8"), "current\n"
         )
+        # ...and the legacy copy is kept under a distinct name, not stranded
+        # in a folder that then survives forever and is re-scanned each prompt.
+        self.assertEqual(
+            (self.current / "memory" / "tool-usage.from-legacy.md").read_text(encoding="utf-8"),
+            "legacy\n",
+        )
+        self.assertFalse(self.legacy.exists())
+
+    def test_same_inode_via_symlinked_queue_is_not_deleted(self):
+        """legacy and current naming one file: merge-then-unlink would wipe it."""
+        self.current.mkdir(parents=True, exist_ok=True)
+        real = self.current / "learnings-queue.json"
+        real.write_text(json.dumps([{"timestamp": "t", "message": "keep me"}]), encoding="utf-8")
+        self.legacy.mkdir(parents=True, exist_ok=True)
+        try:
+            (self.legacy / "learnings-queue.json").symlink_to(real)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        migrate_legacy_project_folder(str(self.project))
+        self.assertTrue(real.exists())
+        self.assertEqual(
+            [i["message"] for i in json.loads(real.read_text(encoding="utf-8"))], ["keep me"])
+
+    def test_queue_write_is_atomic(self):
+        """No truncate-then-write window: a reader never sees a partial file."""
+        self.current.mkdir(parents=True, exist_ok=True)
+        target = self.current / "learnings-queue.json"
+        target.write_text(json.dumps([{"timestamp": "t0", "message": "old"}]), encoding="utf-8")
+        seen = []
+        real_replace = Path.replace
+
+        def spy(self_path, dest):
+            # Mid-write, the destination must still hold the OLD complete file.
+            seen.append(json.loads(Path(dest).read_text(encoding="utf-8")))
+            return real_replace(self_path, dest)
+
+        with patch.object(Path, "replace", spy):
+            save_queue_at(target, [{"timestamp": "t1", "message": "new"}])
+        self.assertEqual([i["message"] for i in seen[0]], ["old"])
+        self.assertEqual(
+            [i["message"] for i in json.loads(target.read_text(encoding="utf-8"))], ["new"])
 
     def test_session_files_are_never_touched(self):
         """A folder holding sessions is not ours to delete."""
@@ -1162,10 +1204,29 @@ class TestLegacyFolderMigration(unittest.TestCase):
         migrate_legacy_project_folder(str(self.project))  # must not raise
         self.assertFalse(self.legacy.exists())
 
-    def test_corrupt_legacy_queue_does_not_raise(self):
+    def test_corrupt_legacy_queue_is_kept_not_deleted(self):
+        """An unparseable queue is the user's only copy. Leave it alone."""
         self.legacy.mkdir(parents=True, exist_ok=True)
-        (self.legacy / "learnings-queue.json").write_text("{not json", encoding="utf-8")
+        corrupt = self.legacy / "learnings-queue.json"
+        corrupt.write_text("{not json", encoding="utf-8")
         migrate_legacy_project_folder(str(self.project))  # must not raise
+        self.assertTrue(corrupt.exists())
+        self.assertEqual(corrupt.read_text(encoding="utf-8"), "{not json")
+
+    def test_symlinked_legacy_dir_is_left_alone(self):
+        """is_dir() follows a link; moving files out of the target is wrong."""
+        real = Path(self.tmp.name) / "somewhere-else"
+        (real / "memory").mkdir(parents=True)
+        (real / "memory" / "notes.md").write_text("keep me\n", encoding="utf-8")
+        (real / "learnings-queue.json").write_text(
+            json.dumps([{"timestamp": "t", "message": "m"}]), encoding="utf-8")
+        try:
+            self.legacy.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        migrate_legacy_project_folder(str(self.project))
+        self.assertTrue((real / "learnings-queue.json").exists())
+        self.assertEqual((real / "memory" / "notes.md").read_text(encoding="utf-8"), "keep me\n")
 
 
 

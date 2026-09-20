@@ -97,7 +97,7 @@ ls ~/.claude/rules/*.md 2>/dev/null
 ```
 TodoWrite tasks for /reflect:
 1. "Parse arguments and check flags" (--dry-run, --scan-history, etc.)
-2. "Load learnings queue from ~/.claude/learnings-queue.json"
+2. "Load learnings queue for this project (path from project_paths.py)"
 3. "Scan historical sessions" (if --scan-history)
 4. "Validate learnings with semantic analysis"
 5. "Filter by project context (global vs project-specific)"
@@ -120,7 +120,7 @@ TodoWrite tasks for /reflect:
 {
   "todos": [
     {"content": "Parse arguments (--scan-history detected)", "status": "in_progress", "activeForm": "Parsing command arguments"},
-    {"content": "Load learnings queue", "status": "pending", "activeForm": "Loading queue from ~/.claude/learnings-queue.json"},
+    {"content": "Load learnings queue", "status": "pending", "activeForm": "Loading this project's learnings queue"},
     {"content": "Scan historical sessions", "status": "pending", "activeForm": "Scanning past sessions for corrections"},
     {"content": "Validate with semantic analysis", "status": "pending", "activeForm": "Validating learnings semantically"},
     {"content": "Filter by project context", "status": "pending", "activeForm": "Filtering global vs project learnings"},
@@ -225,7 +225,7 @@ Exit after showing targets (don't process learnings).
 Show learnings with their confidence and decay status:
 
 ```bash
-cat ~/.claude/learnings-queue.json | jq -r '.[] | "\(.timestamp) | conf:\(.confidence // 0.5) | decay:\(.decay_days // 90)d | \(.message | .[0:60])"'
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py" | jq -r '.[] | "\(.timestamp) | conf:\(.confidence // 0.5) | decay:\(.decay_days // 90)d | \(.message | .[0:60])"'
 ```
 
 Display table of learnings with decay status:
@@ -509,23 +509,18 @@ Scan past sessions for corrections missed by hooks. Useful for:
 
 **0.5a. Find ALL session files for this project:**
 
-1. First, list project folders to find the correct path pattern:
-   ```bash
-   ls ~/.claude/projects/ | grep -i "$(basename $(pwd))"
-   ```
+Ask for the resolved paths rather than deriving them in shell — the encoding
+has more rules than it looks (every non-alphanumeric character becomes a dash,
+and long names are truncated and hashed), and hand-rolled `sed`/`grep` versions
+of it have silently pointed at the wrong folder before:
 
-2. **Handle underscores vs hyphens:** Directory names may use underscores (`darwin_new`) but encoded paths use hyphens (`darwin-new`). If first grep fails, try replacing underscores:
-   ```bash
-   # If no match, try with hyphens instead of underscores
-   ls ~/.claude/projects/ | grep -i "$(basename $(pwd) | tr '_' '-')"
-   ```
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py"
+```
 
-3. Then list ALL session files in that folder:
-   ```bash
-   ls ~/.claude/projects/[PROJECT_FOLDER]/*.jsonl
-   ```
-
-Note: Project paths have `/` replaced with `-`. For `/Users/bob/code/myapp`, look for `-Users-bob-code-myapp`.
+Use the `session_files` array it returns (newest first). If `session_dir_exists`
+is false, this project has no session history — say so rather than guessing at
+another folder.
 
 **IMPORTANT**: With `--scan-history`, process ALL session files (not just recent ones). This includes:
 - Main session files (UUID format like `fa5ae539-d170-4fa8-a8d2-bf50b3ec2861.jsonl`)
@@ -742,7 +737,10 @@ If tool error patterns are found, add them to the working list alongside user co
 - Continue to Step 3 (Project-Aware Filtering) with COMBINED list (queue + history + tool-errors)
 
 ### Step 1: Load and Validate
-- Read the queue from `~/.claude/learnings-queue.json`
+- Read the queue with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py"`. The queue is
+  per-project (`~/.claude/projects/<encoded-cwd>/learnings-queue.json`); never read
+  `~/.claude/learnings-queue.json` directly, which is the pre-3.1 global file that
+  migration deletes on first access.
 - Add all queue items to the working list (mark source as "queued")
 - **IMPORTANT**: Even if queue is empty, continue if `--scan-history` will add items
 - Only exit early if: queue is empty AND not doing history scan AND user declines manual capture
@@ -1399,8 +1397,12 @@ If AGENTS.md exists, apply the SAME learnings using this format:
 ### Step 8: Clear Queue
 
 ```bash
-echo "[]" > ~/.claude/learnings-queue.json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/clear_queue.py"
 ```
+
+Clears the per-project queue through `save_queue()`. Do not `echo "[]" >` any
+path: that wrote the pre-3.1 global file and left the real queue intact, so the
+same learnings came back on the next run.
 
 ### Step 9: Confirm
 
