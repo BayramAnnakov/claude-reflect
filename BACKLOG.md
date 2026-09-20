@@ -80,6 +80,13 @@ through `capture_learning.py` against a throwaway `HOME`, on all three CI
 platforms, and assert the queue file exists at the expected path with the
 expected item, and that stderr is empty.
 
+**Found by the clean-slate run, 2026-09-19:** the suite also had an undeclared
+`jq` dependency. The GitHub runners ship `jq`, so CI never saw it; on a bare
+Linux box six tests failed and - worse - the `test_bash_ignores_*` tests
+*passed* for the wrong reason, because a `jq`-less script emits nothing either
+way. Now skipped explicitly when `jq` is absent. The remaining gap is above:
+nothing runs the Python hooks end to end.
+
 ---
 
 ## 4. Duplicate-project-path collisions after the encoder fix
