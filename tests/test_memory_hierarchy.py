@@ -946,6 +946,20 @@ class TestProjectPathEncoding(unittest.TestCase):
                 for bad in ("/", "\\", ":", "*", "?", '"', "<", ">", "|"):
                     self.assertNotIn(bad, encoded)
 
+    def test_non_ascii_becomes_dashes(self):
+        """Pinned to a live probe, not to a guess.
+
+        Ran `claude -p` in /private/tmp/cr-enc-probe/\u041f\u0440\u043e \u0434\u0435\u043d\u044c\u0433\u0438_v2.test on
+        2026-09-19 and read back the folder Claude Code created for it. Cyrillic
+        letters, the space, the underscore and the dot each became one dash --
+        the transform is ASCII-alphanumeric, not Unicode-aware.
+        """
+        cwd = "/private/tmp/cr-enc-probe/\u041f\u0440\u043e \u0434\u0435\u043d\u044c\u0433\u0438_v2.test"
+        self.assertEqual(
+            _encode_project_path(cwd),
+            "-private-tmp-cr-enc-probe------------v2-test",
+        )
+
     def test_case_is_preserved(self):
         self.assertEqual(_encode_project_path("/Users/Bob/MyApp"), "-Users-Bob-MyApp")
 
