@@ -314,6 +314,58 @@ class TestPatternDetection(unittest.TestCase):
 
         self.assertIsNone(item_type)
 
+    def test_bare_no_statement_rejected(self):
+        """Statements that merely start with the word 'no' are not corrections.
+
+        Regression: '^no[,. ]+' allowed a bare space, so any sentence opening
+        with "no" was captured — including answers to Claude's own questions.
+        """
+        for text in [
+            "no dialog appeared",
+            "no idea",
+            "no problem",
+            "no worries",
+            "no rush on this",
+            "no results came back",
+        ]:
+            with self.subTest(text=text):
+                item_type, _, _, _, _ = detect_patterns(text)
+                self.assertIsNone(item_type, f"false positive on: {text}")
+
+    def test_addressed_no_still_captured(self):
+        """Real corrections opening with a bare 'no' must still be captured."""
+        for text in [
+            "no you got that wrong - they take time for each game",
+            "no bro Melik said that but that's Melik's vocabulary",
+            "no it should use the other endpoint",
+            "no don't touch that file",
+            "no I meant the second one",
+        ]:
+            with self.subTest(text=text):
+                item_type, _, _, _, _ = detect_patterns(text)
+                self.assertIsNotNone(item_type, f"missed correction: {text}")
+
+    def test_punctuated_no_still_captured(self):
+        """The canonical 'no, use X' form is unaffected by the fix."""
+        item_type, patterns, _, _, _ = detect_patterns("no, use gpt-5.1 not gpt-5")
+        self.assertIsNotNone(item_type)
+        self.assertIn("no,", patterns)
+
+    def test_bare_positive_rejected(self):
+        """Praise with no referent cannot become a memory, so it is dropped."""
+        for text in ["i love it", "perfect!", "nailed it", "excellent"]:
+            with self.subTest(text=text):
+                item_type, _, _, _, _ = detect_patterns(text)
+                self.assertIsNone(item_type, f"contentless positive queued: {text}")
+
+    def test_positive_with_context_still_captured(self):
+        """Positives that name what they praise are still worth queueing."""
+        item_type, _, _, sentiment, _ = detect_patterns(
+            "love it, keep the tables compact like that in future reports"
+        )
+        self.assertEqual(item_type, "positive")
+        self.assertEqual(sentiment, "positive")
+
     def test_short_message_confidence_boost(self):
         """Test that short messages get a confidence boost."""
         result = detect_patterns("no, use gpt-5.1")
