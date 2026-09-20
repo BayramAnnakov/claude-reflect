@@ -679,7 +679,14 @@ def _encode_project_path(path_str: str) -> str:
             # live probe: "/private/tmp/cr-probe2/emoji \U0001f600 x" produced
             # "-private-tmp-cr-probe2-emoji----x", four dashes for
             # space + emoji + space.
-            encoded.append("-" * (len(ch.encode("utf-16-le")) // 2))
+            try:
+                units = len(ch.encode("utf-16-le")) // 2
+            except UnicodeEncodeError:
+                # A path byte that is not valid UTF-8 survives os.fsdecode as a
+                # lone surrogate (b"\xe9" -> "\udce9"), which cannot be encoded.
+                # It is one UTF-16 code unit, so one dash.
+                units = 1
+            encoded.append("-" * units)
     return "".join(encoded)
 
 

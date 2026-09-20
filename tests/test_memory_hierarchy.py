@@ -979,6 +979,18 @@ class TestProjectPathEncoding(unittest.TestCase):
         """A BMP character is a single UTF-16 unit, so still one dash."""
         self.assertEqual(_encode_project_path("/a/\u0416/b"), "-a---b")
 
+    def test_undecodable_path_byte_does_not_crash(self):
+        """A path byte that is not valid UTF-8 must not take the hook down.
+
+        os.fsdecode turns such a byte into a lone surrogate, which has no
+        UTF-16 encoding. Before the guard this raised UnicodeEncodeError
+        inside the UserPromptSubmit hook, which is precisely the silent
+        capture failure this module exists to prevent.
+        """
+        path = os.fsdecode(b"/Users/bob/caf\xe9dir")
+        self.assertIn("\udce9", path)
+        self.assertEqual(_encode_project_path(path), "-Users-bob-caf-dir")
+
     def test_case_is_preserved(self):
         self.assertEqual(_encode_project_path("/Users/Bob/MyApp"), "-Users-Bob-MyApp")
 
