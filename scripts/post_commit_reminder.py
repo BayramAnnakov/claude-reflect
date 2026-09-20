@@ -12,11 +12,12 @@ import json
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib.reflect_utils import load_queue
+from lib.reflect_utils import load_queue, ensure_utf8_io
 
 
 def main() -> int:
     """Main entry point."""
+    ensure_utf8_io()
     # Read hook input from stdin
     input_data = sys.stdin.read()
     if not input_data:

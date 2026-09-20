@@ -6,9 +6,42 @@ Cross-platform compatible (Windows, macOS, Linux).
 import json
 import re
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
+
+# =============================================================================
+# Hook I/O encoding
+# =============================================================================
+
+def ensure_utf8_io() -> None:
+    """Force stdin/stdout/stderr to UTF-8 so hooks work on a Windows console.
+
+    Windows defaults these streams to the locale codepage (cp1252, cp1251...).
+    Two failures follow, both silent to the user:
+
+    * Reading a non-ASCII prompt off stdin mangles it, so the *stored* learning
+      is mojibake even though capture "succeeded".
+    * Printing the acknowledgement raises ``UnicodeEncodeError`` on any emoji,
+      which trips each hook's top-level ``except`` and replaces the
+      confirmation with a stderr warning on every single capture.
+
+    No-ops where a stream cannot be reconfigured -- already wrapped, detached,
+    or replaced by a test harness.
+
+    Credit: stdout/stderr half from #38 (@keitaemsden-lab), stdin half
+    reported in #41 (@George-tmm).
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError, AttributeError):
+            pass
+
 
 # =============================================================================
 # Path utilities
@@ -341,16 +374,143 @@ def suggest_claude_file(
 # Auto memory utilities
 # =============================================================================
 
+def _encode_project_path(path_str: str) -> str:
+    """Encode an absolute path the way Claude Code names its project folders.
+
+    Every character that is not an ASCII letter or digit becomes one dash::
+
+        /Users/bob/myapp       ->  -Users-bob-myapp
+        /Users/bob/my_app      ->  -Users-bob-my-app
+        /tmp/b2hook.ApyRBN     ->  -tmp-b2hook-ApyRBN
+        C:\\Users\\bob\\app     ->  C--Users-bob-app
+
+    Two properties matter and both are load-bearing:
+
+    1. The result must equal the folder Claude Code itself writes session
+       files into. Anything else sends the queue and auto-memory to a folder
+       that ``--scan-history`` never reads, with no error.
+    2. The result must be one legal directory name on every platform. A
+       Windows drive colon survived the old encoder and made ``mkdir`` raise
+       ``WinError 267``, which the hook's top-level handler swallowed.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", path_str)
+
+
+def _legacy_encode_project_path(path_str: str) -> str:
+    """Reproduce the pre-3.2 encoder, for migrating folders it created.
+
+    It replaced only the path separators, so any path holding ``_``, ``.``,
+    a space or any other non-alphanumeric character landed in a folder
+    Claude Code never used.
+    """
+    folder_name = path_str.replace("/", "-").replace("\\", "-")
+    if folder_name.startswith("-"):
+        folder_name = folder_name[1:]
+    return "-" + folder_name
+
+
 def get_project_folder_name(project_dir: Optional[str] = None) -> str:
     """Encode a project directory path using Claude Code's folder naming convention.
 
     /Users/bob/myapp → -Users-bob-myapp
     """
     project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
-    folder_name = str(project_path).replace("/", "-").replace("\\", "-")
-    if folder_name.startswith("-"):
-        folder_name = folder_name[1:]
-    return "-" + folder_name
+    return _encode_project_path(str(project_path))
+
+
+def migrate_legacy_project_folder(project_dir: Optional[str] = None) -> None:
+    """Move claude-reflect's files out of a folder the pre-3.2 encoder created.
+
+    The old encoder replaced only path separators, so a project path holding
+    ``_``, ``.`` or a space (``/Users/bob/my_app``) got its queue written to
+    ``-Users-bob-my_app`` while Claude Code kept its sessions in
+    ``-Users-bob-my-app``. Nothing errored: the wrong folder existed, so
+    ``--scan-history`` searched it, found no ``*.jsonl`` and reported nothing.
+
+    Only files this plugin owns are moved -- the queue and ``memory/*.md``.
+    Session files are never touched, and the old folder is removed only if
+    moving its contents leaves it empty.
+    """
+    try:
+        project_path = Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
+    except (OSError, ValueError):
+        return
+
+    legacy_name = _legacy_encode_project_path(str(project_path))
+    current_name = _encode_project_path(str(project_path))
+    if legacy_name == current_name:
+        return
+
+    projects_dir = get_claude_dir() / "projects"
+    legacy_dir = projects_dir / legacy_name
+    if not legacy_dir.is_dir():
+        return
+
+    current_dir = projects_dir / current_name
+
+    # Merge the queue, oldest first, dropping items already carried over.
+    legacy_queue = legacy_dir / "learnings-queue.json"
+    if legacy_queue.is_file():
+        try:
+            legacy_items = json.loads(legacy_queue.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError, OSError):
+            legacy_items = []
+        if isinstance(legacy_items, list) and legacy_items:
+            current_queue = current_dir / "learnings-queue.json"
+            existing: List[Dict[str, Any]] = []
+            if current_queue.is_file():
+                try:
+                    loaded = json.loads(current_queue.read_text(encoding="utf-8"))
+                    existing = loaded if isinstance(loaded, list) else []
+                except (json.JSONDecodeError, IOError, OSError):
+                    existing = []
+            seen = {_queue_item_key(i) for i in existing}
+            merged = existing + [
+                i for i in legacy_items
+                if isinstance(i, dict) and _queue_item_key(i) not in seen
+            ]
+            try:
+                current_dir.mkdir(parents=True, exist_ok=True)
+                current_queue.write_text(
+                    json.dumps(merged, indent=2), encoding="utf-8"
+                )
+            except (IOError, OSError):
+                return
+        try:
+            legacy_queue.unlink()
+        except OSError:
+            pass
+
+    # Move auto-memory files that the correct folder does not already have.
+    legacy_memory = legacy_dir / "memory"
+    if legacy_memory.is_dir():
+        current_memory = current_dir / "memory"
+        for md_file in sorted(legacy_memory.glob("*.md")):
+            target = current_memory / md_file.name
+            if target.exists():
+                continue
+            try:
+                current_memory.mkdir(parents=True, exist_ok=True)
+                md_file.replace(target)
+            except OSError:
+                continue
+        try:
+            legacy_memory.rmdir()
+        except OSError:
+            pass  # still holds files we did not move
+
+    # Remove the stale folder only when nothing is left in it.
+    try:
+        legacy_dir.rmdir()
+    except OSError:
+        pass  # session files or anything else we do not own
+
+
+def _queue_item_key(item: Any) -> Tuple[str, str]:
+    """Identity of a queue item for de-duplication during migration."""
+    if not isinstance(item, dict):
+        return ("", "")
+    return (str(item.get("timestamp", "")), str(item.get("message", "")))
 
 
 def get_auto_memory_path(project_dir: Optional[str] = None) -> Path:
@@ -476,6 +636,8 @@ def load_queue(project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     # Migrate legacy global queue if it has items
     migrate_global_queue()
+    # Migrate a folder left behind by the pre-3.2 path encoder
+    migrate_legacy_project_folder(project_dir)
 
     path = get_queue_path(project_dir)
     if not path.exists():
