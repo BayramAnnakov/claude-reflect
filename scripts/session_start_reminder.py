@@ -11,11 +11,12 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib.reflect_utils import load_queue, get_cleanup_period_days
+from lib.reflect_utils import load_queue, get_cleanup_period_days, ensure_utf8_io
 
 
 def main() -> int:
     """Main entry point."""
+    ensure_utf8_io()
     # Check if reminder is disabled via environment variable
     if os.environ.get("CLAUDE_REFLECT_REMINDER", "true").lower() == "false":
         return 0

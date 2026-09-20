@@ -21,6 +21,9 @@ from lib.reflect_utils import (
     _parse_inclusions,
     _resolve_inclusion,
     _follow_inclusion_graph,
+    _encode_project_path,
+    _legacy_encode_project_path,
+    migrate_legacy_project_folder,
     find_claude_files,
     suggest_claude_file,
     get_project_folder_name,
@@ -283,9 +286,13 @@ class TestAutoMemoryPath(unittest.TestCase):
     def test_folder_name_encoding_structure(self):
         """Test folder name encoding produces valid structure on any platform."""
         result = get_project_folder_name(tempfile.gettempdir())
-        self.assertTrue(result.startswith("-"))
         self.assertNotIn("/", result)
         self.assertNotIn("\\", result)
+        # A colon is a legal path char but an ILLEGAL directory-name char on
+        # Windows: leaving the drive colon in made mkdir raise WinError 267.
+        self.assertNotIn(":", result)
+        # One path component, so it can be a single folder under projects/.
+        self.assertEqual(Path(result).name, result)
 
     @unittest.skipIf(platform.system() == "Windows", "Unix-specific path encoding")
     @patch("lib.reflect_utils.get_claude_dir")
@@ -894,6 +901,160 @@ class TestFindClaudeFilesWithInclusions(unittest.TestCase):
 
         files = find_claude_files(self.temp_dir)
         self.assertFalse(any("node_modules" in f["path"] for f in files))
+
+
+class TestProjectPathEncoding(unittest.TestCase):
+    """The encoder must reproduce Claude Code's own project-folder names.
+
+    Derived empirically from 209 session folders written by Claude Code
+    (May-Sep 2026): every character that is not an ASCII letter or digit
+    becomes exactly one dash. These exercise the pure encoder rather than
+    get_project_folder_name(), so they run on Windows too -- resolve()
+    prepends a drive letter there and used to force the real assertions
+    to be skipped on the one platform where the encoder crashed.
+    """
+
+    def test_plain_posix_path(self):
+        self.assertEqual(_encode_project_path("/Users/bob/myapp"), "-Users-bob-myapp")
+
+    def test_underscore_becomes_dash(self):
+        # /private/tmp/cc_test -> -private-tmp-cc-test (observed on disk)
+        self.assertEqual(_encode_project_path("/private/tmp/cc_test"), "-private-tmp-cc-test")
+
+    def test_dot_becomes_dash(self):
+        # /private/tmp/b2hook.ApyRBN/repo -> ...-b2hook-ApyRBN-repo (observed)
+        self.assertEqual(
+            _encode_project_path("/private/tmp/b2hook.ApyRBN/repo"),
+            "-private-tmp-b2hook-ApyRBN-repo",
+        )
+
+    def test_space_becomes_dash(self):
+        self.assertEqual(_encode_project_path("/Users/bob/my app"), "-Users-bob-my-app")
+
+    def test_windows_drive_colon_becomes_dash(self):
+        self.assertEqual(_encode_project_path(r"C:\Users\bob\app"), "C--Users-bob-app")
+
+    def test_no_illegal_directory_chars_anywhere(self):
+        for raw in [
+            "/Users/bob/my_app",
+            "/Users/bob/a.b c",
+            r"C:\Users\bob\My Project",
+            r"D:\Some_Dir.v2\repo",
+        ]:
+            with self.subTest(raw=raw):
+                encoded = _encode_project_path(raw)
+                for bad in ("/", "\\", ":", "*", "?", '"', "<", ">", "|"):
+                    self.assertNotIn(bad, encoded)
+
+    def test_case_is_preserved(self):
+        self.assertEqual(_encode_project_path("/Users/Bob/MyApp"), "-Users-Bob-MyApp")
+
+    def test_legacy_encoder_differs_on_underscore(self):
+        """Pin the exact gap the migration exists to close."""
+        path = "/Users/bob/my_app"
+        self.assertNotEqual(_legacy_encode_project_path(path), _encode_project_path(path))
+        self.assertEqual(_legacy_encode_project_path(path), "-Users-bob-my_app")
+
+    def test_legacy_encoder_agrees_on_plain_paths(self):
+        """No migration should fire for a path with no special characters."""
+        path = "/Users/bob/myapp"
+        self.assertEqual(_legacy_encode_project_path(path), _encode_project_path(path))
+
+
+class TestLegacyFolderMigration(unittest.TestCase):
+    """Queues written under the pre-3.2 encoder must be recovered, not orphaned."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.claude_dir = Path(self.tmp.name) / ".claude"
+        self.projects = self.claude_dir / "projects"
+        self.projects.mkdir(parents=True)
+        # A project path with an underscore: the two encoders disagree on it.
+        self.project = Path(self.tmp.name) / "work" / "my_app"
+        self.project.mkdir(parents=True)
+        resolved = str(self.project.resolve())
+        self.legacy = self.projects / _legacy_encode_project_path(resolved)
+        self.current = self.projects / _encode_project_path(resolved)
+        self.assertNotEqual(self.legacy, self.current)
+        patcher = patch("lib.reflect_utils.get_claude_dir", return_value=self.claude_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _write_legacy_queue(self, items):
+        self.legacy.mkdir(parents=True, exist_ok=True)
+        (self.legacy / "learnings-queue.json").write_text(
+            json.dumps(items), encoding="utf-8"
+        )
+
+    def test_queue_moves_to_correct_folder(self):
+        self._write_legacy_queue([{"timestamp": "2026-01-01T00:00:00Z", "message": "use ripgrep"}])
+        migrate_legacy_project_folder(str(self.project))
+        moved = json.loads((self.current / "learnings-queue.json").read_text(encoding="utf-8"))
+        self.assertEqual([i["message"] for i in moved], ["use ripgrep"])
+        self.assertFalse((self.legacy / "learnings-queue.json").exists())
+
+    def test_merges_with_existing_queue_without_duplicating(self):
+        keep = {"timestamp": "2026-01-02T00:00:00Z", "message": "already here"}
+        self.current.mkdir(parents=True, exist_ok=True)
+        (self.current / "learnings-queue.json").write_text(json.dumps([keep]), encoding="utf-8")
+        self._write_legacy_queue([keep, {"timestamp": "2026-01-01T00:00:00Z", "message": "from legacy"}])
+        migrate_legacy_project_folder(str(self.project))
+        merged = json.loads((self.current / "learnings-queue.json").read_text(encoding="utf-8"))
+        self.assertEqual([i["message"] for i in merged], ["already here", "from legacy"])
+
+    def test_auto_memory_files_move(self):
+        (self.legacy / "memory").mkdir(parents=True)
+        (self.legacy / "memory" / "tool-usage.md").write_text("- use unipile mcp\n", encoding="utf-8")
+        migrate_legacy_project_folder(str(self.project))
+        self.assertEqual(
+            (self.current / "memory" / "tool-usage.md").read_text(encoding="utf-8"),
+            "- use unipile mcp\n",
+        )
+
+    def test_existing_memory_file_is_not_clobbered(self):
+        (self.legacy / "memory").mkdir(parents=True)
+        (self.legacy / "memory" / "tool-usage.md").write_text("legacy\n", encoding="utf-8")
+        (self.current / "memory").mkdir(parents=True)
+        (self.current / "memory" / "tool-usage.md").write_text("current\n", encoding="utf-8")
+        migrate_legacy_project_folder(str(self.project))
+        self.assertEqual(
+            (self.current / "memory" / "tool-usage.md").read_text(encoding="utf-8"), "current\n"
+        )
+
+    def test_session_files_are_never_touched(self):
+        """A folder holding sessions is not ours to delete."""
+        self._write_legacy_queue([{"timestamp": "t", "message": "m"}])
+        session = self.legacy / "abc.jsonl"
+        session.write_text("{}\n", encoding="utf-8")
+        migrate_legacy_project_folder(str(self.project))
+        self.assertTrue(session.exists())
+        self.assertTrue(self.legacy.is_dir())
+
+    def test_emptied_legacy_folder_is_removed(self):
+        self._write_legacy_queue([{"timestamp": "t", "message": "m"}])
+        migrate_legacy_project_folder(str(self.project))
+        self.assertFalse(self.legacy.exists())
+
+    def test_noop_when_encoders_agree(self):
+        plain = Path(self.tmp.name) / "work" / "plainapp"
+        plain.mkdir(parents=True)
+        folder = self.projects / _encode_project_path(str(plain.resolve()))
+        folder.mkdir(parents=True)
+        (folder / "learnings-queue.json").write_text("[]", encoding="utf-8")
+        migrate_legacy_project_folder(str(plain))
+        self.assertTrue((folder / "learnings-queue.json").exists())
+
+    def test_missing_legacy_folder_is_harmless(self):
+        migrate_legacy_project_folder(str(self.project))  # must not raise
+        self.assertFalse(self.legacy.exists())
+
+    def test_corrupt_legacy_queue_does_not_raise(self):
+        self.legacy.mkdir(parents=True, exist_ok=True)
+        (self.legacy / "learnings-queue.json").write_text("{not json", encoding="utf-8")
+        migrate_legacy_project_folder(str(self.project))  # must not raise
+
+
 
 if __name__ == "__main__":
     unittest.main()

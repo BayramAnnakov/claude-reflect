@@ -11,11 +11,18 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib.reflect_utils import get_queue_path, get_backup_dir, load_queue, backup_timestamp
+from lib.reflect_utils import (
+    get_queue_path,
+    get_backup_dir,
+    load_queue,
+    backup_timestamp,
+    ensure_utf8_io,
+)
 
 
 def main() -> int:
     """Main entry point."""
+    ensure_utf8_io()
     items = load_queue()
     if not items:
         return 0

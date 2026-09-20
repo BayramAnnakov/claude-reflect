@@ -5,6 +5,21 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-09-19
+
+### Fixed
+- **Project folder encoding sent queues to a folder Claude Code never reads** (#41, thanks @George-tmm; Windows crash also reported in #38 by @keitaemsden-lab)
+  - `get_project_folder_name()` replaced only path separators. Claude Code replaces *every* non-alphanumeric character with `-`, verified against 209 of its own session folders (May-Sep 2026).
+  - Any project path holding `_`, `.` or a space (`/Users/bob/my_app`) wrote its queue and auto-memory to `-Users-bob-my_app` while sessions lived in `-Users-bob-my-app`. Nothing errored — `--scan-history` searched the wrong folder, found no `*.jsonl`, and reported nothing. Affected macOS and Linux, not just Windows.
+  - On Windows the drive colon also survived (`-C:-Users-bob-app`), making `mkdir` raise `WinError 267`. The hook's top-level handler swallowed it, so capture failed silently and no queue was ever created.
+  - Queues and auto-memory left in a mis-encoded folder are migrated automatically on first access. Session files are never touched, and the old folder is removed only once empty.
+- **Hook I/O is forced to UTF-8** (`ensure_utf8_io`, from #38; stdin half from #41)
+  - Windows consoles default to the locale codepage: non-ASCII prompts were stored as mojibake, and printing the `📝` acknowledgement raised `UnicodeEncodeError`, replacing every capture confirmation with a stderr warning.
+
+### Testing
+- New `TestProjectPathEncoding` and `TestLegacyFolderMigration` (18 tests). The encoder cases exercise the pure encoder rather than `get_project_folder_name()`, so they run on Windows too — the previous assertions were skipped on the one platform where the encoder crashed, and the one test that did run there never checked for a colon.
+- Mutation-tested: reintroducing the old encoder, substituting the separators-and-colon-only encoder, disabling the migration, clobbering existing memory files, or deleting session files each fail the suite.
+
 ## [3.1.0] - 2026-03-16
 
 ### Added

@@ -13,6 +13,7 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib.reflect_utils import (
+    ensure_utf8_io,
     get_queue_path,
     load_queue,
     save_queue,
@@ -25,6 +26,7 @@ from lib.reflect_utils import (
 
 def main() -> int:
     """Main entry point."""
+    ensure_utf8_io()
     # Read JSON from stdin
     input_data = sys.stdin.read()
     if not input_data:
