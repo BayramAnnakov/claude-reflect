@@ -7,18 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.2.0] - 2026-09-19
 
+Bug-fix release with one new feature. The headline is that **`/reflect` was
+reading the wrong file** and **the queue was being written to the wrong
+folder** — two independent faults that each made the plugin silently do
+nothing for a large set of users. Neither errored.
+
+### Added
+- **Referenced docs as `/reflect` targets** (#35, thanks @alonl; closes #34)
+  - `find_claude_files()` now follows `@`-includes and inline markdown links out of your memory files and offers the `.md` docs it reaches as routing targets, so a learning that belongs in `docs/standards.md` no longer drifts into `CLAUDE.md`.
+  - Bounded: depth 3, 200 nodes, 1 MiB per file, cycle-safe, `.md` only, and resolved paths confined to the project root plus `~/.claude`.
+- **`scripts/project_paths.py`** — prints the resolved queue, session and memory paths for a project as JSON. Slash commands call this instead of deriving paths in shell.
+- **`scripts/clear_queue.py`** — clears the per-project queue through `save_queue()`.
+
 ### Fixed
+- **`/reflect` read and cleared the pre-3.1 *global* queue**
+  - `commands/reflect.md` still named `~/.claude/learnings-queue.json` in five places — a file `migrate_global_queue()` deletes on first access. So `/reflect` processed nothing, "cleared" an empty file, and left the real per-project queue intact; the same learnings reappeared every run. The per-project change (#21, v3.1.0) moved the Python and left the skill behind.
+  - `/reflect-skills` encoded the session folder with `sed 's|/|-|g'`, and `--scan-history` grepped `~/.claude/projects` by basename with a `tr '_' '-'` guess. Three hand-rolled encoders, all drifted. All now call `project_paths.py`.
 - **Project folder encoding sent queues to a folder Claude Code never reads** (#41, thanks @George-tmm; Windows crash also reported in #38 by @keitaemsden-lab)
-  - `get_project_folder_name()` replaced only path separators. Claude Code replaces *every* non-alphanumeric character with `-`, verified against 209 of its own session folders (May-Sep 2026).
+  - `get_project_folder_name()` replaced only path separators. Claude Code replaces *every* non-alphanumeric character with `-`, verified against 209 of its own session folders (May–Sep 2026).
   - Any project path holding `_`, `.` or a space (`/Users/bob/my_app`) wrote its queue and auto-memory to `-Users-bob-my_app` while sessions lived in `-Users-bob-my-app`. Nothing errored — `--scan-history` searched the wrong folder, found no `*.jsonl`, and reported nothing. Affected macOS and Linux, not just Windows.
   - On Windows the drive colon also survived (`-C:-Users-bob-app`), making `mkdir` raise `WinError 267`. The hook's top-level handler swallowed it, so capture failed silently and no queue was ever created.
-  - Queues and auto-memory left in a mis-encoded folder are migrated automatically on first access. Session files are never touched, and the old folder is removed only once empty.
-- **Hook I/O is forced to UTF-8** (`ensure_utf8_io`, from #38; stdin half from #41)
-  - Windows consoles default to the locale codepage: non-ASCII prompts were stored as mojibake, and printing the `📝` acknowledgement raised `UnicodeEncodeError`, replacing every capture confirmation with a stderr warning.
+  - Three further divergences, each established with a live `claude -p` probe: the cwd is normalized to **NFC** first (an NFD path from Finder or unzip is one code point longer and mis-encodes); the substitution counts **UTF-16 code units**, so an emoji becomes two dashes; and a name over **200 characters** is truncated and given a base-36 hash, which is now reproduced.
+  - The capture hook now takes the folder from the hook payload's `transcript_path` rather than deriving it, since the transcript already lives in the folder Claude Code chose.
+  - Queues and auto-memory left in a mis-encoded folder are migrated automatically on first access. Session files are never touched, unreadable queues are never deleted or overwritten, and the old folder is removed only once empty.
+- **Fewer false positives, without losing real corrections** (#37 thanks @dirtpan, #44 thanks @gztes)
+  - Slash-command invocations, contentless praise (`perfect!` with no referent) and task pivots (`Perfect! Now let's add the column`) no longer queue.
+  - Both guards were then narrowed after review, because each was dropping real feedback: the slash guard also ate absolute paths (`/etc/hosts is wrong, use 127.0.0.1 not localhost`, and `remember:` after a path, breaking the promise that `remember:` is always processed), and the pivot guard matched `please` / `we need to` anywhere, eating `Nailed it! Please keep using this pattern`.
+  - The `no`-opener detection is a deny-list rather than an allowlist of continuations. The allowlist dropped project rules — `no semicolons in this codebase`, `no emojis in commit messages`, `no typescript any, ever` — while still admitting `no it works now thanks`, because `it`/`this`/`you`/`i` are the words a benign reply opens with. Detection favours recall; the semantic pass at `/reflect` time is what filters.
+- **Slash commands could not find their own scripts** (#40, thanks @Ike-li)
+  - `/view-queue` and `/skip-reflect` called `python3 scripts/read_queue.py` with a bare relative path resolved against the user's cwd, so `/skip-reflect` reported `Queue count: 0` for a queue it could not read. `/reflect` used `readlink -f "$0"`, where `$0` is the command's first argument. All bundled scripts are now referenced through `${CLAUDE_PLUGIN_ROOT}`, and the 11 Python snippets in `reflect.md` bootstrap `sys.path` instead of assuming the plugin checkout is the cwd.
+- **Queue writes are atomic.** `write_text` truncates first, so a crash or a concurrent reader saw an empty file — which the loaders read as "no learnings".
+- **Hook I/O is forced to UTF-8** (`ensure_utf8_io`, stdout half from #38, stdin half from #41). Windows consoles default to the locale codepage: non-ASCII prompts were stored as mojibake, and printing the `📝` acknowledgement raised `UnicodeEncodeError`, replacing every capture confirmation with a stderr warning. The confirmation is ASCII now as well.
+- **`UnicodeDecodeError` no longer escapes the queue loaders.** It is a `ValueError`, not a `JSONDecodeError`, so a non-UTF-8 queue file propagated out of `load_queue()` and killed every capture for that project on every prompt.
+- **Inclusion parsing no longer backtracks catastrophically.** A line of unmatched `[` took 2.0s at 80k characters, under the 1 MiB cap and uninterrupted by the depth and node limits. Memory-file reads are size-capped too; previously only the link-extraction pass was.
 
 ### Testing
-- New `TestProjectPathEncoding` and `TestLegacyFolderMigration` (18 tests). The encoder cases exercise the pure encoder rather than `get_project_folder_name()`, so they run on Windows too — the previous assertions were skipped on the one platform where the encoder crashed, and the one test that did run there never checked for a colon.
-- Mutation-tested: reintroducing the old encoder, substituting the separators-and-colon-only encoder, disabling the migration, clobbering existing memory files, or deleting session files each fail the suite.
+- 322 tests, green on macOS, Linux and Windows across Python 3.8 and 3.11.
+- New: `TestProjectPathEncoding`, `TestLongFolderNameResolution`, `TestLegacyFolderMigration`, `TestInclusionParserHardening`, `TestReviewGateRegressions`, `TestFableGateRegressions`. The last two hold the exact prompt strings three independent reviewers found were being dropped.
+- The encoder cases exercise the pure encoder rather than `get_project_folder_name()`, so they run on Windows — the previous assertions were skipped on the one platform where the encoder crashed, and the one test that did run there never checked for a colon.
+- Legacy bash tests skip explicitly when `jq` is absent. Without it six failed and, less visibly, the `test_bash_ignores_*` tests *passed* for the wrong reason: a `jq`-less script emits nothing and they assert an absence.
+
+### Known issues
+See [BACKLOG.md](BACKLOG.md) entry 6 for verified findings deliberately left in
+this release, each with the cost of leaving it — including a read-modify-write
+race between concurrent sessions in one project, `~/.claude` being inside the
+inclusion allowlist, and auto-memory being keyed on cwd where Claude Code keys
+it on the git root.
 
 ## [3.1.0] - 2026-03-16
 
