@@ -1,0 +1,108 @@
+# Backlog
+
+Known work that is real, understood, and not done. Each entry says **why it
+matters** - the cost of leaving it - not just what it is. Reproduced, measured
+or found-in-review earns a place here; speculation does not.
+
+---
+
+## 1. Rank repeat corrections above one-off redirects in `/reflect`
+
+**Measured, 2026-09-19.** A census of 102 captured learnings on one heavy
+user's machine (every `learnings-queue.json` under `~/.claude/projects/`,
+not a sample):
+
+| bucket | count |
+|---|---|
+| `"no, <one-off task redirect>"` | 55 |
+| `"actually, <redirect>"` | 13 |
+| already rejected by current `main` (the `"no need"` lane) | 20 |
+| genuinely reusable rules | ~16 |
+
+So roughly **20% of what reaches the queue is a reusable rule**. The rest are
+corrections that were true for one moment and are worthless as memory.
+
+The signal that separates them is already in the data and we throw it away:
+**`"use unipile mcp"` appears four times**, in four different wordings, across
+months. The detector caught it every time. It never reached a CLAUDE.md, so the
+user kept retyping it. A one-off redirect almost never recurs; a real rule
+recurs until it is written down.
+
+**Why it matters:** `/reflect` currently presents the queue in timestamp order,
+so a user wades through 80 one-offs to find the 16 rules. A queue that is
+reliably mostly noise trains people to stop running `/reflect` at all - and
+then the genuine corrections are discarded along with the noise. Clustering
+near-duplicate learnings and surfacing the recurring ones first would raise the
+hit rate without touching detection.
+
+**Shape:** cluster queue items by semantic similarity at `/reflect` time (the
+semantic layer is already there in `scripts/lib/semantic_detector.py`), show
+clusters of size >= 2 first, and label them with the recurrence count.
+
+---
+
+## 2. Regex cannot separate a rule from a moment - stop trying to
+
+Related to #1, and a constraint to hold in mind whenever a new
+`FALSE_POSITIVE_PATTERNS` entry is proposed.
+
+`"no, use unipile mcp"` (a rule) and `"no, lets discuss first, show me"` (a
+moment) are structurally identical. No opener, length or punctuation heuristic
+tells them apart - only meaning does.
+
+**Measured against the same 102 items:** the three false-positive PRs open in
+September 2026 (#37, #44, and the fix for #43) between them would have rejected
+**1** of those 102. Each targets a shape that was real in its reporter's
+project and absent from this one. They are still worth merging - they cost
+nothing and remove genuine noise - but the lesson is that the returns are
+per-user and small.
+
+**Why it matters:** each new regex adds a false-negative risk for somebody
+else's phrasing and moves the precision needle by about one item per hundred.
+Effort is better spent on the semantic pass and on #1.
+
+---
+
+## 3. No test runs the hooks the way Claude Code runs them
+
+CI's smoke step pipes `{"prompt":"test"}` into each hook. `"test"` is not a
+correction, so detection returns `None` and **the entire capture-and-write path
+is never executed in CI** - queue creation, folder encoding, `save_queue`, and
+the confirmation `print()` are all unreached.
+
+**Why it matters:** this is exactly how two shipped bugs survived. The
+`WinError 267` folder-encoding crash (#38, #41) and the `UnicodeEncodeError` on
+the `📝` confirmation both live past the branch that smoke test takes. Both
+were reported by users, twice each, while CI stayed green.
+
+**Shape:** pipe a real correction (`{"prompt":"no, use python not python3"}`)
+through `capture_learning.py` against a throwaway `HOME`, on all three CI
+platforms, and assert the queue file exists at the expected path with the
+expected item, and that stderr is empty.
+
+---
+
+## 4. Duplicate-project-path collisions after the encoder fix
+
+`_encode_project_path` maps every non-alphanumeric character to `-`, matching
+Claude Code. That means `/Users/bob/my_app` and `/Users/bob/my-app` collide on
+one folder, and their queues merge.
+
+This is Claude Code's own behaviour and we must match it, so the collision is
+not ours to fix - but queue items carry a `project` field, so `/reflect` could
+warn when one queue holds items from more than one project path.
+
+**Why it matters:** low frequency, but the failure is confusing when it lands -
+a learning from one repo is offered as a target in another.
+
+---
+
+## 5. `remember:` is unused in practice
+
+Zero of the 102 captured items on the audited machine used the explicit
+`remember:` marker, the one path with 0.90 confidence and no false-positive
+risk. Every capture came from implicit detection.
+
+**Why it matters:** the highest-precision input we have is invisible to users.
+Worth one line in `SessionStart` output or the README before investing further
+in implicit detection.
