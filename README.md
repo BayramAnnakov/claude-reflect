@@ -1,12 +1,24 @@
 # claude-reflect
 
 [![GitHub stars](https://img.shields.io/github/stars/BayramAnnakov/claude-reflect?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/stargazers)
-[![Version](https://img.shields.io/badge/version-3.3.0-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
+[![Version](https://img.shields.io/badge/version-3.3.1-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-322%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
+[![Tests](https://img.shields.io/badge/tests-332%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect#platform-support)
 
 A self-learning system for Claude Code that captures corrections and discovers workflow patterns — turning them into permanent memory and reusable skills.
+
+**Two ways to run it:**
+
+| | **Plugin** (Python) | **Mod** (`reflect-mod`, new in 3.3) |
+|---|---|---|
+| You correct Claude | a hook queues it | a model check sees it at once, in any language |
+| You review | later, with `/reflect` | right away, in a band above the prompt |
+| Runs on | Claude Code, plus Codex/Cursor via AGENTS.md | Claude Code 2.1.286+ with mods |
+
+![reflect-mod: a correction becomes a rule you can save with one press](assets/reflect-mod-band.png)
+
+Pick one. [Install the plugin](#installation) or [the mod](#new-claude-reflect-as-a-mod-early-access).
 
 ## What it does
 
