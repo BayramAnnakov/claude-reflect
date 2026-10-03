@@ -9,6 +9,11 @@
       "name": "claude-reflect",
       "source": "./",
       "description": "Self-learning system that captures corrections and updates CLAUDE.md"
+    },
+    {
+      "name": "reflect-mod",
+      "source": "./mod",
+      "description": "claude-reflect as a Claude Code mod (early access): checks each short prompt with a model, saves rules from a band above the prompt"
     }
   ]
 }

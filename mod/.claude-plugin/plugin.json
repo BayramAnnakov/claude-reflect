@@ -1,0 +1,12 @@
+{
+  "name": "reflect-mod",
+  "version": "3.3.0",
+  "description": "claude-reflect as a Claude Code mod: a model check on each short prompt finds reusable corrections (any language); a band above the prompt saves them to CLAUDE.md on one press",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Bayram Annakov",
+    "url": "https://github.com/bayramannakov"
+  },
+  "repository": "https://github.com/bayramannakov/claude-reflect",
+  "license": "MIT"
+}

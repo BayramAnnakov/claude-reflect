@@ -181,3 +181,29 @@ share one folder** — see entry 4. Real on this machine today:
 `load_queue()` there. That is the intended, Claude-Code-matching behaviour,
 but `/reflect` should warn when one queue holds items from several project
 paths.
+
+---
+
+## Plugin name "claude-reflect" is now a reserved name
+
+**Measured, 2026-10-02, Claude Code 2.1.288.** `claude plugin validate .` fails on `main`: names starting with
+`claude-` are reserved for Anthropic's own plugins. Installing still works today (verified: `marketplace add` +
+`plugin install claude-reflect@claude-reflect-marketplace` in a clean config dir both succeed), so nobody is broken yet.
+
+**Why it matters:** RELEASING.md requires `claude plugin validate .` to pass, so every release now fails its own
+checklist, and a directory submission will likely be refused. Renaming changes the install id
+(`<name>@claude-reflect-marketplace`), so existing users would need a migration note - which is why it was not done
+in the 3.3.0 mod release. The mod was named `reflect-mod` for this reason.
+
+---
+
+## reflect-mod: two sessions saving at the same instant can lose a bullet
+
+**Found in review, 2026-10-02.** `$.fs.write` replaces a whole file and `$.store` has no compare-and-set. The mod
+serializes saves inside one session and re-reads the file just before each write, but two sessions pressing Save on
+the same CLAUDE.md within the same moment can still lose one bullet, and two sessions recording learnings at once can
+lose one queue entry.
+
+**Why it matters:** low frequency (it takes two presses in two terminals at once), but the loss is silent. The fix
+needs a lock outside the mod sandbox (a small host-side helper reached through `$.process.run`), which costs a
+dependency the mod otherwise does not have.
