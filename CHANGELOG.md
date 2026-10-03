@@ -5,6 +5,18 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-10-02
+
+### Added
+- **`reflect-mod` - claude-reflect as a Claude Code mod** (`mod/`, second plugin in the same marketplace; early access, needs Claude Code 2.1.286+)
+  - A one-shot model check on every short prompt replaces regex capture, so corrections in any language are found and one-off redirects are not (addresses BACKLOG #2).
+  - A band above the prompt offers Save / other scope / Edit / Skip at the moment of the correction; repeats merge into one row with a count (addresses BACKLOG #1 for mod users).
+  - Saved rules go into a marked section of `~/.claude/CLAUDE.md` or `./CLAUDE.md` and into the current session's system prompt at once.
+  - Hardened after an independent review (16 findings, 14 fixed): no prompt text is stored, secret-shaped prompts and rules are refused, rules are validated before any write, order-aware matching keeps "pnpm, not npm" and "npm, not pnpm" apart, saves re-read the file and refuse broken markers, the classifier policy is in the system prompt with the conversation passed as untrusted data, and nothing slow runs inside prompt submission.
+  - 10 tests under `claude plugin test mod` (mocked model, free).
+
+The Python plugin is unchanged.
+
 ## [3.2.0] - 2026-09-19
 
 Bug-fix release with one new feature. The headline is that **`/reflect` was

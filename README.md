@@ -1,7 +1,7 @@
 # claude-reflect
 
 [![GitHub stars](https://img.shields.io/github/stars/BayramAnnakov/claude-reflect?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/stargazers)
-[![Version](https://img.shields.io/badge/version-3.2.0-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
+[![Version](https://img.shields.io/badge/version-3.3.0-blue?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-322%20passing-brightgreen?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect/actions)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square)](https://github.com/BayramAnnakov/claude-reflect#platform-support)
@@ -71,6 +71,30 @@ After installation, **restart Claude Code** (exit and reopen). Then hooks auto-c
 - **macOS**: Fully supported
 - **Linux**: Fully supported
 - **Windows**: Fully supported (native Python, no WSL required)
+
+### New: claude-reflect as a mod (early access)
+
+Claude Code [mods](https://claude.dev/blog/getting-started-with-claude-code-mods/) run inside the session, so the
+same idea works without a queue you have to remember to review:
+
+- **Every short prompt** (500 characters or less, not "ok"/"continue", not a slash command) goes to a one-shot
+  model check (`haiku` by default) that decides whether it holds a reusable rule. It reads intent, not keywords,
+  so corrections in any language count ("нет, используй pnpm" works).
+- **A band above the prompt** shows each rule it finds, with **Save**, **Global/This repo instead**, **Edit** and
+  **Skip**. You decide in the moment; repeats merge into one row with a count (`×3`).
+- **Save** adds a bullet inside a marked section of `~/.claude/CLAUDE.md` or `./CLAUDE.md`, and the rule applies
+  in the current session at once. Nothing is written without a press.
+- `remember: <rule>` skips the model. `/reflect-queue` lists what it found; `/reflect-pause` turns it off.
+
+```bash
+claude plugin marketplace add bayramannakov/claude-reflect
+claude plugin install reflect-mod@claude-reflect-marketplace
+```
+
+Needs Claude Code **2.1.286 or newer** with mods enabled. Each checked prompt is one small model call on your
+own Claude account. Install **either** the mod **or** the Python plugin above, not both: with both, every
+correction is captured twice. The Python plugin stays the choice for `/reflect --scan-history`, `--dedupe`,
+`--organize`, `/reflect-skills`, and for Codex/Cursor users. Details: [`mod/README.md`](mod/README.md).
 
 ## Commands
 
@@ -327,6 +351,10 @@ claude-reflect/
 │   ├── extract_tool_errors.py
 │   ├── extract_tool_rejections.py
 │   └── legacy/                   # Bash scripts (deprecated)
+├── mod/                    # reflect-mod: the same idea as a Claude Code mod (TypeScript)
+│   ├── .claude-plugin/plugin.json
+│   ├── hooks/register.tsx  # Hooks module: prompt check, band, save
+│   └── hooks/reflect.test.tsx
 ├── tests/                  # Test suite
 └── SKILL.md                # Skill context for Claude
 ```
