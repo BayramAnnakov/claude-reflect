@@ -4,6 +4,8 @@ claude-reflect as a [Claude Code mod](https://claude.dev/blog/getting-started-wi
 TypeScript plugin of function hooks. Same goal as the Python plugin - turn your corrections into CLAUDE.md rules - but
 the review happens above the prompt, at the moment you correct, instead of in a queue you run `/reflect` on later.
 
+![A correction typed at the prompt, and the rule the mod found, ready to save](../assets/reflect-mod-band.png)
+
 ## Why a second version
 
 On one heavy user's machine the Python plugin's queue held 102 items across 37 projects, none ever cleared; about 16
