@@ -88,5 +88,5 @@ Code config directory) until you decide on them.
 
 ```bash
 claude plugin validate mod
-claude plugin test mod        # 10 tests, mocked model - free
+claude plugin test mod        # 11 tests, mocked model - free
 ```
