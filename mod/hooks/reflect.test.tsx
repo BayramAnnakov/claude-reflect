@@ -159,6 +159,15 @@ test('only short, human, non-trivial, secret-free prompts reach the model', asyn
   expect(w.asked).toEqual(['vim'])
 })
 
+test('a prompt typed in the desktop Code tab (sdk origin) reaches the model and becomes a band row', async ($, on) => {
+  const w = world(on, { verdicts: { 'нет, используй pnpm': PNPM } })
+  await start($)
+  await say($, w, 'нет, используй pnpm', 'sdk')
+  await say($, w, 'Internal meeting ended, wrap it up', 'plugin')
+  expect(w.asked).toEqual(['нет, используй pnpm'])
+  expect(await rows($)).toEqual(['reflect · "Use pnpm, not npm, in this repo"'])
+})
+
 test('a repeat counts on the same row; the opposite rule gets its own row', async ($, on) => {
   const again = { ...PNPM, rule: 'use pnpm not npm in this repo' }
   const opposite = { ...PNPM, rule: 'Use npm, not pnpm, in this repo' }
