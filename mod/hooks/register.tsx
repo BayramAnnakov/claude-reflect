@@ -17,8 +17,8 @@ const BAND_ROWS = 2
 const SAME = 0.6
 const START = '<!-- claude-reflect: learned rules (saved from the band; edit freely) -->'
 const END = '<!-- end claude-reflect -->'
-/** The person's own prompts: typed at the terminal, or sent by Remote Control. */
-const HUMAN = new Set(['composer', 'bridge'])
+/** The person's own prompts: typed at the terminal, sent by Remote Control, or typed in the desktop Code tab (an SDK host). */
+const HUMAN = new Set(['composer', 'bridge', 'sdk'])
 /** Acknowledgements and go-aheads: nothing to learn, so no model call. */
 const TRIVIAL =
   /^(y|yes|yep|ok|okay|k|go|go on|go ahead|continue|proceed|next|done|thanks|thank you|ty|great|nice|cool|lgtm|да|ок|окей|ага|го|давай|дальше|продолжай|спасибо|отлично|\d{1,3})[\s.!)]*$/i
