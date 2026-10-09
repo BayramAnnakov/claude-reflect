@@ -58,6 +58,18 @@ Use either this or the Python plugin, not both (every correction would be captur
 `remember: <rule>` skips the model and goes straight to the band. `/reflect-queue` lists what was found here and
 globally; `/reflect-pause` stops and resumes checking.
 
+### Save targets
+
+Saves go to `~/.claude/CLAUDE.md` and `./CLAUDE.md` by default. The `globalFile` and `projectFile` options change
+that, for example to share rules with Codex, opencode and other agents that read `AGENTS.md`. Set them in the config
+menu, or in `~/.claude/settings.json`:
+
+```json
+"pluginConfigs": {
+  "reflect-mod": { "options": { "globalFile": "~/.agents/AGENTS.md", "projectFile": "AGENTS.md" } }
+}
+```
+
 ## Cost and privacy
 
 One small model call per eligible prompt, on the session's own client - it counts toward your Claude usage like any

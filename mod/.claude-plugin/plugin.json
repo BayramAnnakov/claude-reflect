@@ -8,5 +8,19 @@
     "url": "https://github.com/bayramannakov"
   },
   "repository": "https://github.com/bayramannakov/claude-reflect",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "globalFile": {
+      "type": "string",
+      "title": "Global rules file",
+      "description": "Where Save writes global rules. ~/ is your home. Set to ~/.agents/AGENTS.md to share rules with Codex and opencode.",
+      "default": "~/.claude/CLAUDE.md"
+    },
+    "projectFile": {
+      "type": "string",
+      "title": "Project rules file",
+      "description": "File in the repo root where Save writes project rules, e.g. AGENTS.md.",
+      "default": "CLAUDE.md"
+    }
+  }
 }
