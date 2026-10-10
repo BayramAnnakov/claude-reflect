@@ -8,5 +8,19 @@
     "url": "https://github.com/bayramannakov"
   },
   "repository": "https://github.com/bayramannakov/claude-reflect",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "globalFile": {
+      "type": "string",
+      "title": "Global rules file",
+      "description": "Where Save writes global rules.",
+      "default": "~/.claude/CLAUDE.md"
+    },
+    "projectFile": {
+      "type": "string",
+      "title": "Project rules file",
+      "description": "Where Save writes project rules.",
+      "default": "CLAUDE.md"
+    }
+  }
 }
