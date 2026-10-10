@@ -5,6 +5,13 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **reflect-mod: rules your instructions already cover are not proposed.** The word-pair check only saw `- ` bullets of one CLAUDE.md, so a rule stated in prose, in another language or in `~/.claude/rules/*.md` came back as a suggestion. A rule the classifier finds now gets one short follow-up call (same model, cached instructions) that asks whether `~/.claude/CLAUDE.md`, `~/.claude/rules/*.md`, or the project's `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md` or `CLAUDE.local.md` already state it or decide the opposite; covered rules never reach the band. Pending learnings are checked the same way once (`coveredChecked`).
+- **reflect-mod: rules are written in the user's language** instead of always English, so they read like the CLAUDE.md they are saved to.
+- 11 tests (one new; two updated so the coverage call is not counted as a classifier call).
+
 ## [3.3.1] - 2026-10-02
 
 ### Docs

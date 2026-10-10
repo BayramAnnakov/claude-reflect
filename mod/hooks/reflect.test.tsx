@@ -9,6 +9,8 @@ const ok = (value: unknown) => ({ value }) as never
 
 type Opts = {
   verdicts?: Record<string, object | 'error' | 'throw'>
+  /** Candidate rules the user's instruction files already cover. */
+  covered?: string[]
   files?: Record<string, string>
   root?: () => string
   box?: string
@@ -23,6 +25,10 @@ function world(on: On, opts: Opts = {}) {
   const systems: string[] = []
   const filled: string[] = []
   on('model.complete', async ($, e) => {
+    // The coverage check against the instruction files is its own call: "no" unless a test names the candidate rule
+    // in opts.covered.
+    const candidate = /<candidate_rule>([\s\S]*)<\/candidate_rule>/.exec(e.prompt)?.[1]
+    if (candidate !== undefined) return ok({ isAnswered: true, text: opts.covered?.includes(candidate) ? 'yes' : 'no', usage: {} })
     const text = /<user_message>([\s\S]*)<\/user_message>/.exec(e.prompt)?.[1] ?? ''
     asked.push(text)
     systems.push(e.system ?? '')
@@ -220,4 +226,17 @@ test('broken markers in the target file block the write', async ($, on) => {
   await press($, 'save:')
   expect(w.files['/repo/CLAUDE.md']).toBe(broken)
   expect(await rows($)).toEqual(['reflect · "Use pnpm, not npm, in this repo"'])
+})
+
+// A rule the instruction files already cover, in any language, is never shown.
+test('a rule the instruction files already cover never reaches the band', async ($, on) => {
+  const w = world(on, {
+    verdicts: { 'нет, используй pnpm': PNPM },
+    covered: ['Use pnpm, not npm, in this repo'],
+    files: { '/repo/CLAUDE.md': '# Repo\nUsa pnpm, nunca npm.\n' },
+  })
+  await start($)
+  await say($, w, 'нет, используй pnpm')
+  expect(w.asked).toEqual(['нет, используй pnpm'])
+  expect(await rows($)).toEqual([])
 })

@@ -37,7 +37,12 @@ Use either this or the Python plugin, not both (every correction would be captur
 2. **The check** - one `$.model.complete` call (`haiku`) with the policy in
    the system prompt and your message plus the assistant's previous reply passed as untrusted data. It answers
    `{is_rule, rule, scope, confidence}`; anything malformed, below 0.7, multi-line, over 200 characters or
-   secret-shaped is dropped.
+   secret-shaped is dropped. The rule is written in the language you wrote it in.
+   **Already covered?** A rule that passes gets one more short call (same model, five tokens out, your instructions
+   sent as a cached block): do your instruction files already say it, in any language or wording, or decide the
+   opposite? Files read: `~/.claude/CLAUDE.md`, `~/.claude/rules/*.md`, and the project's `CLAUDE.md`,
+   `.claude/CLAUDE.md`, `AGENTS.md` and `CLAUDE.local.md`. A covered rule never reaches the band. Learnings still
+   waiting from before are checked the same way once, at session start.
 3. **The band** - each found rule, full text, with:
    - **Save to ./CLAUDE.md** or **Save to ~/.claude/CLAUDE.md** (the scope the check suggested),
    - **Global instead** / **This repo instead**,

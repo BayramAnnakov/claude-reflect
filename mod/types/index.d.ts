@@ -1,7 +1,7 @@
 /** One learning the check found: a rule, where it belongs, and what happened to it. */
 export type Learning = {
   id: string
-  /** The rule, one imperative line in English. */
+  /** The rule, one imperative line in the language the user said it in. */
   rule: string
   scope: 'global' | 'project'
   /** The session root it was said in. */
@@ -12,6 +12,8 @@ export type Learning = {
   lastAt: number
   status: 'pending' | 'saved' | 'skipped'
   confidence: number
+  /** Already compared once with the user's instruction files. */
+  coveredChecked?: boolean
 }
 
 /** A rule saved in this session, with where it applies. */
