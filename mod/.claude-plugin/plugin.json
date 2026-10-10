@@ -13,7 +13,7 @@
     "globalFile": {
       "type": "string",
       "title": "Global rules file",
-      "description": "Where Save writes global rules. ~/ is your home. Set to ~/.agents/AGENTS.md to share rules with Codex and opencode.",
+      "description": "Where Save writes global rules. Set to ~/.agents/AGENTS.md to share rules with Codex and opencode.",
       "default": "~/.claude/CLAUDE.md"
     },
     "projectFile": {
