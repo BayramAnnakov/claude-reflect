@@ -316,8 +316,9 @@ async function edit($: EngineInterface, l: Learning) {
 
 export const register: Register = (on, options) => {
   if (typeof options.model === 'string' && options.model.trim() !== '') model = options.model.trim()
-  globalFile = String(options.globalFile)
-  projectFile = String(options.projectFile)
+  // A field cleared in the config menu arrives as '', not as its default.
+  globalFile = String(options.globalFile || '~/.claude/CLAUDE.md')
+  projectFile = String(options.projectFile || 'CLAUDE.md')
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'reflect-queue', description: 'List the learnings reflect found here and their state' })

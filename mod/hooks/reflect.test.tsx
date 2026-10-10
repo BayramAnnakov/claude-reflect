@@ -234,3 +234,12 @@ test('globalFile and projectFile options send saves to AGENTS.md for other agent
   expect(w.files['/home/u/.agents/AGENTS.md']).toContain('- Answer in English')
   expect(w.files['/repo/CLAUDE.md']).toBeUndefined()
 })
+
+// Guards: a cleared option ('' is a stored value, so the engine's default does not apply) saving to the repo dir.
+test('a cleared projectFile option falls back to CLAUDE.md', { options: { projectFile: '' } }, async ($, on) => {
+  const w = world(on, { verdicts: { 'нет, используй pnpm': PNPM } })
+  await start($)
+  await say($, w, 'нет, используй pnpm')
+  await press($, 'save:')
+  expect(w.files['/repo/CLAUDE.md']).toContain('- Use pnpm, not npm, in this repo')
+})
