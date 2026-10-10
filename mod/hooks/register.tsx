@@ -34,8 +34,8 @@ const SECRET = [
 
 // The module's own: a reload drops them; the store keeps the learnings themselves.
 let model = 'haiku'
-let globalFile = '~/.claude/CLAUDE.md'
-let projectFile = 'CLAUDE.md'
+let globalFile: string
+let projectFile: string
 let isDraining = false
 /** Saves to CLAUDE.md files run one after another inside this session. */
 let writing: Promise<unknown> = Promise.resolve()
@@ -316,8 +316,8 @@ async function edit($: EngineInterface, l: Learning) {
 
 export const register: Register = (on, options) => {
   if (typeof options.model === 'string' && options.model.trim() !== '') model = options.model.trim()
-  if (typeof options.globalFile === 'string' && options.globalFile.trim() !== '') globalFile = options.globalFile.trim()
-  if (typeof options.projectFile === 'string' && options.projectFile.trim() !== '') projectFile = options.projectFile.trim()
+  globalFile = String(options.globalFile)
+  projectFile = String(options.projectFile)
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'reflect-queue', description: 'List the learnings reflect found here and their state' })

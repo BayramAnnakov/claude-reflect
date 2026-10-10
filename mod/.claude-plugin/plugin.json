@@ -19,7 +19,7 @@
     "projectFile": {
       "type": "string",
       "title": "Project rules file",
-      "description": "File in the repo root where Save writes project rules, e.g. AGENTS.md.",
+      "description": "Where Save writes project rules.",
       "default": "CLAUDE.md"
     }
   }
