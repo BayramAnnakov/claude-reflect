@@ -221,3 +221,25 @@ test('broken markers in the target file block the write', async ($, on) => {
   expect(w.files['/repo/CLAUDE.md']).toBe(broken)
   expect(await rows($)).toEqual(['reflect · "Use pnpm, not npm, in this repo"'])
 })
+
+test('globalFile and projectFile options send saves to AGENTS.md for other agents to read', { options: { globalFile: '~/.agents/AGENTS.md', projectFile: 'AGENTS.md' } }, async ($, on) => {
+  const ENGLISH = { is_rule: true, rule: 'Answer in English', scope: 'global', confidence: 0.9 }
+  const w = world(on, { verdicts: { 'нет, используй pnpm': PNPM, 'answer in english please': ENGLISH } })
+  await start($)
+  await say($, w, 'нет, используй pnpm')
+  await press($, 'save:')
+  await say($, w, 'answer in english please')
+  await press($, 'save:')
+  expect(w.files['/repo/AGENTS.md']).toContain('- Use pnpm, not npm, in this repo')
+  expect(w.files['/home/u/.agents/AGENTS.md']).toContain('- Answer in English')
+  expect(w.files['/repo/CLAUDE.md']).toBeUndefined()
+})
+
+// Guards: a cleared option ('' is a stored value, so the engine's default does not apply) saving to the repo dir.
+test('a cleared projectFile option falls back to CLAUDE.md', { options: { projectFile: '' } }, async ($, on) => {
+  const w = world(on, { verdicts: { 'нет, используй pnpm': PNPM } })
+  await start($)
+  await say($, w, 'нет, используй pnpm')
+  await press($, 'save:')
+  expect(w.files['/repo/CLAUDE.md']).toContain('- Use pnpm, not npm, in this repo')
+})
