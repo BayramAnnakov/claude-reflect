@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Skip bash tests on Windows
@@ -363,6 +364,99 @@ class TestExtractSessionLearnings(unittest.TestCase):
             args=["/nonexistent/file.jsonl"]
         )
         self.assertNotEqual(code, 0)  # Should fail
+
+
+class TestCaptureScopeClosure(unittest.TestCase):
+    """Exercise the maintained stdin hook with an owned transcript and queue."""
+
+    def setUp(self):
+        """Create an isolated project tree without changing HOME."""
+        self.temp_dir = Path(tempfile.mkdtemp()).resolve()
+        self.project_dir = self.temp_dir / "projects" / "scope-case"
+        self.project_dir.mkdir(parents=True)
+        self.transcript = self.project_dir / "session.jsonl"
+        self.queue = self.project_dir / "learnings-queue.json"
+        self.work_dir = self.temp_dir / "work"
+        self.work_dir.mkdir()
+        self.sibling_queue = self.temp_dir / "projects" / "untouched" / "learnings-queue.json"
+        self.sibling_queue.parent.mkdir()
+        self.sibling_queue.write_text("[]", encoding="utf-8")
+
+    def tearDown(self):
+        """Remove only the tree created by this test."""
+        shutil.rmtree(self.temp_dir)
+
+    def _capture(self, prompt):
+        """Run the actual CLI and validate its owned storage boundary."""
+        entry = {"type": "user", "message": {"content": prompt}}
+        self.transcript.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        self.assertEqual(self.transcript.resolve().parent, self.project_dir)
+        self.assertEqual(self.transcript.parent.parent.name, "projects")
+        self.assertEqual(self.project_dir.parent.parent, self.temp_dir)
+        self.assertFalse(self.transcript.is_symlink())
+        self.assertFalse(self.project_dir.is_symlink())
+        self.assertFalse(self.project_dir.parent.is_symlink())
+        started = datetime.now(timezone.utc)
+        result = subprocess.run(
+            [sys.executable, str(PYTHON_SCRIPTS["capture_learning"])],
+            input=json.dumps({"prompt": prompt, "transcript_path": str(self.transcript)}),
+            capture_output=True, text=True, cwd=str(self.work_dir), timeout=20,
+        )
+        ended = datetime.now(timezone.utc)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertTrue(self.queue.is_file())
+        self.assertFalse(self.queue.is_symlink())
+        self.assertEqual(self.sibling_queue.read_text(encoding="utf-8"), "[]")
+        self.assertEqual(list(self.work_dir.iterdir()), [])
+        return result.stdout, json.loads(self.queue.read_text(encoding="utf-8")), started, ended
+
+    def _assert_rejected(self, prompt):
+        """Require successful execution with no captured learning."""
+        stdout, items, _, _ = self._capture(prompt)
+        self.assertEqual(stdout, "")
+        self.assertEqual(items, [])
+
+    def _assert_captured(self, prompt, expected):
+        """Validate every queue field and the real CLI confirmation."""
+        stdout, items, started, ended = self._capture(prompt)
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(set(item), {
+            "type", "message", "timestamp", "project", "patterns", "confidence", "sentiment", "decay_days",
+        })
+        self.assertEqual(item["message"], prompt)
+        self.assertEqual(item["project"], str(self.work_dir))
+        self.assertEqual((item["type"], item["patterns"], item["confidence"], item["sentiment"], item["decay_days"]), expected)
+        timestamp = datetime.strptime(item["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        self.assertGreaterEqual(timestamp, started.replace(microsecond=0))
+        self.assertLessEqual(timestamp, ended)
+        preview = prompt[:40] + "..." if len(prompt) > 40 else prompt
+        self.assertEqual(stdout, f"[reflect] Learning captured: '{preview}' (confidence: {expected[2]:.0%})\n")
+
+    def test_bare_closure_not_queued(self):
+        """The primary bare closure is not saved."""
+        self._assert_rejected("leave it alone")
+
+    def test_auth_question_not_queued(self):
+        """The primary auth question is not saved."""
+        self._assert_rejected("should we leave the auth module alone?")
+
+    def test_dashboard_question_not_queued(self):
+        """The primary dashboard question is not saved."""
+        self._assert_rejected("So you are recommending we just leave the dashboard as is?")
+
+    def test_conditional_target_queued(self):
+        """A named conditional rule retains the complete queue tuple."""
+        self._assert_captured("leave the auth module alone unless I ask", ("guardrail", "leave-alone", 0.85, "correction", 90))
+
+    def test_uncaptured_follow_on_stays_empty(self):
+        """Closure handling does not introduce another correction pattern."""
+        self._assert_rejected("that's fine, but use ripgrep next time")
+
+    def test_existing_follow_on_queued(self):
+        """The existing use-X-not-Y correction retains its exact confidence."""
+        self._assert_captured("that's fine, but use ripgrep not grep next time", ("auto", "use-X-not-Y", 0.7999999999999999, "correction", 60))
 
 
 class TestCapturePatternEquivalence(unittest.TestCase):

@@ -1250,6 +1250,14 @@ GUARDRAIL_PATTERNS = [
     (r"(?:minimal|minimum|only necessary) changes", "minimal-changes", 0.80, 90),
 ]
 
+SCOPE_CLOSURE_PATTERNS = [
+    r"leave\s+(?:it|this|that)\s+(?:alone|as\s+is|as-is|unchanged|be)[.!]*",
+    r"no\s+more\s+(?:edits?|changes?|tweaks?|work|suggestions?)"
+    r"(?:,\s*we(?:'re|\s+are)\s+(?:good|done|all\s+set))?[.!]*",
+    r"(?:we(?:'re|\s+are)|that(?:'s|\s+is)|it(?:'s|\s+is))"
+    r"\s+(?:good|fine|done|enough|all\s+set)[.!]*",
+]
+
 # Structural patterns indicating FALSE POSITIVES (language-agnostic)
 # These focus on MESSAGE STRUCTURE rather than specific words
 FALSE_POSITIVE_PATTERNS = [
@@ -1362,6 +1370,11 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
     """
     Detect patterns in text and return classification.
 
+    Reject slash commands and short messages before explicit markers.
+    Questions and whole-message closures must be rejected before guardrails.
+    Other false-positive filters stay after guardrails so task/error wording
+    and CJK question particles do not suppress standing rules.
+
     Returns:
         Tuple of (type, matched_patterns, confidence, sentiment, decay_days)
         type: "explicit", "positive", "auto", "guardrail", or None
@@ -1398,12 +1411,30 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
         if re.search(pattern, text, re.IGNORECASE):
             return ("explicit", name, confidence, "correction", decay)
 
+    if _is_question_or_scope_closure(stripped):
+        return (None, "", 0.0, "correction", 90)
+
     # Check for guardrail patterns - "don't do X unless" constraints
     # These are high-confidence corrections about unwanted behavior
     for pattern, name, confidence, decay in GUARDRAIL_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
             return ("guardrail", name, confidence, "correction", decay)
 
+    return _detect_non_guardrail(text, stripped)
+
+
+def _is_question_or_scope_closure(stripped: str) -> bool:
+    """Reject terminal questions and complete, unqualified closing messages."""
+    if stripped.endswith(("?", "？")):
+        return True
+    for pattern in SCOPE_CLOSURE_PATTERNS:
+        if re.fullmatch(pattern, stripped, re.IGNORECASE):
+            return True
+    return False
+
+
+def _detect_non_guardrail(text: str, stripped: str) -> Tuple[Optional[str], str, float, str, int]:
+    """Apply existing remaining filters and preserve the detection order."""
     # Check for FALSE POSITIVE patterns - skip these messages
     for fp_pattern in FALSE_POSITIVE_PATTERNS:
         if re.search(fp_pattern, text, re.IGNORECASE):
@@ -1415,31 +1446,49 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
         if re.search(nc_pattern, text, re.IGNORECASE):
             return (None, "", 0.0, "correction", 90)
 
+    positive = _detect_positive(text)
+    if positive is not None:
+        return positive
+
+    # Skip long messages for weak patterns (likely task requests)
+    text_length = len(text)
+
+    cjk = _detect_cjk_correction(stripped, text_length)
+    if cjk is not None:
+        return cjk
+    return _detect_english_correction(text, text_length)
+
+
+def _detect_positive(text: str) -> Optional[Tuple[Optional[str], str, float, str, int]]:
+    """Return an existing positive/rejection tuple, or None when unmatched."""
     # Check for positive patterns
     matched_positive = []
     for pattern, name, confidence, decay in POSITIVE_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
             matched_positive.append(name)
 
-    if matched_positive:
-        # Bare praise carries no referent — drop it rather than queue an
-        # item that /reflect cannot turn into anything.
-        if len(text.strip()) < MIN_POSITIVE_CONTEXT_LENGTH:
-            return (None, "", 0.0, "positive", 90)
+    if not matched_positive:
+        return None
 
-        # Forward-pivot guard — "Perfect! Now let's add X" matches the
-        # positive pattern but the body is a fresh task instruction, not
-        # retrospective feedback. Reject so we don't pollute the queue
-        # with task pivots (which are never reusable learnings).
-        # Applied ONLY here, not to corrections — "Now let's stop X" is
-        # a legitimate correction even when phrased as a task pivot.
-        for fp_pattern in FORWARD_PIVOT_PATTERNS:
-            if re.search(fp_pattern, text, re.IGNORECASE):
-                return (None, "", 0.0, "correction", 90)
-        return ("positive", " ".join(matched_positive), 0.70, "positive", 90)
+    # Bare praise carries no referent — drop it rather than queue an
+    # item that /reflect cannot turn into anything.
+    if len(text.strip()) < MIN_POSITIVE_CONTEXT_LENGTH:
+        return (None, "", 0.0, "positive", 90)
 
-    # Skip long messages for weak patterns (likely task requests)
-    text_length = len(text)
+    # Forward-pivot guard — "Perfect! Now let's add X" matches the
+    # positive pattern but the body is a fresh task instruction, not
+    # retrospective feedback. Reject so we don't pollute the queue
+    # with task pivots (which are never reusable learnings).
+    # Applied ONLY here, not to corrections — "Now let's stop X" is
+    # a legitimate correction even when phrased as a task pivot.
+    for fp_pattern in FORWARD_PIVOT_PATTERNS:
+        if re.search(fp_pattern, text, re.IGNORECASE):
+            return (None, "", 0.0, "correction", 90)
+    return ("positive", " ".join(matched_positive), 0.70, "positive", 90)
+
+
+def _detect_cjk_correction(stripped: str, text_length: int) -> Optional[Tuple[str, str, float, str, int]]:
+    """Keep the original CJK matching flags, order and confidence arithmetic."""
 
     # Check for CJK correction patterns (language-specific)
     # Use stripped text for anchor patterns (^/$) to handle leading/trailing whitespace
@@ -1451,15 +1500,20 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
             if is_strong:
                 cjk_strong = True
 
-    if matched_cjk:
-        confidence = 0.75 if cjk_strong else 0.60
-        decay_days = 90 if cjk_strong else 60
-        if text_length < MIN_SHORT_CORRECTION_LENGTH:
-            confidence = min(0.90, confidence + 0.10)
-        elif text_length > 300:
-            confidence = max(0.50, confidence - 0.15)
-        return ("auto", " ".join(matched_cjk), confidence, "correction", decay_days)
+    if not matched_cjk:
+        return None
 
+    confidence = 0.75 if cjk_strong else 0.60
+    decay_days = 90 if cjk_strong else 60
+    if text_length < MIN_SHORT_CORRECTION_LENGTH:
+        confidence = min(0.90, confidence + 0.10)
+    elif text_length > 300:
+        confidence = max(0.50, confidence - 0.15)
+    return ("auto", " ".join(matched_cjk), confidence, "correction", decay_days)
+
+
+def _detect_english_correction(text: str, text_length: int) -> Tuple[Optional[str], str, float, str, int]:
+    """Collect the unchanged English patterns before applying their score."""
     # Check for English correction patterns
     matched_corrections = []
     pattern_count = 0
@@ -1478,36 +1532,46 @@ def detect_patterns(text: str) -> Tuple[Optional[str], str, float, str, int]:
             if name == "I-told-you":
                 has_i_told_you = True
 
-    if matched_corrections:
-        # Calculate confidence based on pattern count, type, and length
-        if has_i_told_you:
-            confidence = 0.85
-            decay_days = 120
-        elif pattern_count >= 3:
-            confidence = 0.85
-            decay_days = 120
-        elif pattern_count >= 2:
-            confidence = 0.75
-            decay_days = 90
-        elif has_strong_pattern:
-            confidence = 0.70
-            decay_days = 60
-        else:
-            confidence = 0.55  # Reduced for weak single patterns
-            decay_days = 45
+    if not matched_corrections:
+        return (None, "", 0.0, "correction", 90)
 
-        # Adjust confidence based on message length (structural signal)
-        # Short messages are more likely to be direct corrections
-        if text_length < MIN_SHORT_CORRECTION_LENGTH:
-            confidence = min(0.90, confidence + 0.10)  # Boost for short messages
-        elif text_length > 300:
-            confidence = max(0.50, confidence - 0.15)  # Reduce for long messages
-        elif text_length > 150:
-            confidence = max(0.55, confidence - 0.10)
+    confidence, decay_days = _english_correction_score(
+        pattern_count, has_strong_pattern, has_i_told_you, text_length
+    )
+    return ("auto", " ".join(matched_corrections), confidence, "correction", decay_days)
 
-        return ("auto", " ".join(matched_corrections), confidence, "correction", decay_days)
 
-    return (None, "", 0.0, "correction", 90)
+def _english_correction_score(
+    pattern_count: int, has_strong_pattern: bool, has_i_told_you: bool, text_length: int
+) -> Tuple[float, int]:
+    """Preserve the existing confidence ladder, length adjustments and decay."""
+    # Calculate confidence based on pattern count, type, and length
+    if has_i_told_you:
+        confidence = 0.85
+        decay_days = 120
+    elif pattern_count >= 3:
+        confidence = 0.85
+        decay_days = 120
+    elif pattern_count >= 2:
+        confidence = 0.75
+        decay_days = 90
+    elif has_strong_pattern:
+        confidence = 0.70
+        decay_days = 60
+    else:
+        confidence = 0.55  # Reduced for weak single patterns
+        decay_days = 45
+
+    # Adjust confidence based on message length (structural signal)
+    # Short messages are more likely to be direct corrections
+    if text_length < MIN_SHORT_CORRECTION_LENGTH:
+        confidence = min(0.90, confidence + 0.10)  # Boost for short messages
+    elif text_length > 300:
+        confidence = max(0.50, confidence - 0.15)  # Reduce for long messages
+    elif text_length > 150:
+        confidence = max(0.55, confidence - 0.10)
+
+    return confidence, decay_days
 
 
 def create_queue_item(

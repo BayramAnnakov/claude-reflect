@@ -385,6 +385,109 @@ class TestPatternDetection(unittest.TestCase):
             self.assertLessEqual(confidence, 0.65)
 
 
+class TestScopeClosureDetection(unittest.TestCase):
+    """Keep scope closure rejection separate from reusable standing rules."""
+
+    REJECTED = (None, "", 0.0, "correction", 90)
+    LEAVE_ALONE = ("guardrail", "leave-alone", 0.85, "correction", 90)
+
+    def test_scope_closures_full_tuple(self):
+        """Whole-message closures do not become reusable corrections."""
+        for text in [
+            "leave it alone",
+            "  LEAVE THIS AS IS!  ",
+            "leave that as-is.",
+            "leave this unchanged!",
+            "leave it be",
+            "no more edits, we're good",
+            "no more changes, we are done!",
+            "no more tweaks, we're all set.",
+            "no more work",
+            "no more suggestions!",
+            "we're good",
+            "we are done!",
+            "that's fine.",
+            "that is enough",
+            "it's all set",
+            "it is good!",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(detect_patterns(text), self.REJECTED)
+
+    def test_guardrail_questions_full_tuple(self):
+        """Terminal questions are rejected before the guardrail loop."""
+        for text in [
+            "should we leave the auth module alone?",
+            "So you are recommending we just leave the dashboard as is?",
+            "can you make minimal changes here?",
+            "should I only change what I asked?",
+            "should we leave the auth module alone？  ",
+            "should we leave the auth module alone?\t",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(detect_patterns(text), self.REJECTED)
+
+    def test_standing_rules_full_tuple(self):
+        """Named objects, conditions and future constraints retain their tuple."""
+        for text in [
+            "leave the auth module alone unless I ask",
+            "leave the auth module alone",
+            "leave it alone unless I ask",
+            "always leave it alone",
+            "leave it alone next time",
+            "please leave the auth module alone",
+            "leave the auth module aloneか",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(detect_patterns(text), self.LEAVE_ALONE)
+
+    def test_explicit_and_follow_on_controls_full_tuple(self):
+        """Explicit markers and existing correction recognition keep precedence."""
+        cases = [
+            ("remember: leave it alone?", ("explicit", "remember:", 0.90, "correction", 120)),
+            ("remember: we're done", ("explicit", "remember:", 0.90, "correction", 120)),
+            ("that's fine, but use ripgrep next time", self.REJECTED),
+            ("that's fine, but use ripgrep not grep next time",
+             ("auto", "use-X-not-Y", 0.7999999999999999, "correction", 60)),
+            ("no more edits without review", ("auto", "no-bare", 0.7999999999999999, "correction", 60)),
+            ("no semicolons in this codebase", ("auto", "no-bare", 0.7999999999999999, "correction", 60)),
+            ("no it works for me", self.REJECTED),
+            ("perfect!", (None, "", 0.0, "positive", 90)),
+            ("Perfect! Now let's add a dashboard", self.REJECTED),
+            ("Nailed it! Please keep using this pattern", ("positive", "keep-doing", 0.70, "positive", 90)),
+            ("/reflect remember: leave it alone", self.REJECTED),
+            ("/Users/bob/gen.ts - remember: never edit generated files",
+             ("explicit", "remember:", 0.90, "correction", 120)),
+            ("やめて", ("auto", "yamete", 0.85, "correction", 90)),
+            ("いや、別の方法ですか", self.REJECTED),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(detect_patterns(text), expected)
+
+    def test_length_boundaries_full_tuple(self):
+        """Thresholds retain the exact existing floating-point arithmetic."""
+        cases = [
+            ("no,x", self.REJECTED),
+            ("no,xx", ("auto", "no,", 0.7999999999999999, "correction", 60)),
+            ("好好", self.REJECTED),
+            ("やめて", ("auto", "yamete", 0.85, "correction", 90)),
+            ("excellent " + "x" * 14, (None, "", 0.0, "positive", 90)),
+            ("excellent " + "x" * 15, ("positive", "keep-doing", 0.70, "positive", 90)),
+            ("no, " + "x" * 75, ("auto", "no,", 0.7999999999999999, "correction", 60)),
+            ("no, " + "x" * 76, ("auto", "no,", 0.70, "correction", 60)),
+            ("actually, " + "x" * 140, ("auto", "actually", 0.55, "correction", 45)),
+            ("actually, " + "x" * 141, self.REJECTED),
+            ("no, " + "x" * 146, ("auto", "no,", 0.70, "correction", 60)),
+            ("no, " + "x" * 147, ("auto", "no,", 0.60, "correction", 60)),
+            ("no, " + "x" * 296, ("auto", "no,", 0.60, "correction", 60)),
+            ("no, " + "x" * 297, ("auto", "no,", 0.5499999999999999, "correction", 60)),
+        ]
+        for text, expected in cases:
+            with self.subTest(length=len(text), text=text[:30]):
+                self.assertEqual(detect_patterns(text), expected)
+
+
 class TestCJKPatternDetection(unittest.TestCase):
     """Tests for CJK (Chinese, Japanese, Korean) pattern detection."""
 
