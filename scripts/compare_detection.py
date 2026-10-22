@@ -26,7 +26,7 @@ from typing import Dict, List, Any, Optional, Tuple
 # Add lib to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from lib.reflect_utils import detect_patterns, extract_user_messages
+from lib.reflect_utils import detect_patterns, extract_user_messages, get_claude_dir
 from lib.semantic_detector import semantic_analyze
 
 # Colors for terminal output
@@ -48,7 +48,7 @@ def find_project_sessions(project_path: str) -> List[Path]:
     project_path = os.path.abspath(project_path)
     project_name = os.path.basename(project_path)
 
-    claude_projects = Path.home() / ".claude" / "projects"
+    claude_projects = get_claude_dir() / "projects"
     if not claude_projects.exists():
         return []
 

@@ -62,7 +62,7 @@ def get_queue_path(project_dir: Optional[str] = None) -> Path:
         return get_claude_dir() / "projects" / folder_name / "learnings-queue.json"
     except Exception:
         # Fallback to global path if encoding fails
-        return Path.home() / ".claude" / "learnings-queue.json"
+        return get_claude_dir() / "learnings-queue.json"
 
 
 def project_dir_from_transcript(transcript_path: Optional[str]) -> Optional[Path]:
@@ -136,7 +136,7 @@ def get_global_queue_path() -> Path:
     Used for migration: items from the old global queue are distributed
     to their per-project queues on first access.
     """
-    return Path.home() / ".claude" / "learnings-queue.json"
+    return get_claude_dir() / "learnings-queue.json"
 
 
 def migrate_global_queue() -> None:
@@ -197,12 +197,13 @@ def migrate_global_queue() -> None:
 
 def get_backup_dir() -> Path:
     """Get path to learnings backup directory."""
-    return Path.home() / ".claude" / "learnings-backups"
+    return get_claude_dir() / "learnings-backups"
 
 
 def get_claude_dir() -> Path:
-    """Get path to .claude directory."""
-    return Path.home() / ".claude"
+    """Get path to the Claude config directory (CLAUDE_CONFIG_DIR, else ~/.claude)."""
+    custom = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(custom).expanduser() if custom else Path.home() / ".claude"
 
 
 def get_cleanup_period_days() -> Optional[int]:

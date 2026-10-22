@@ -52,26 +52,41 @@ class TestPathUtilities(unittest.TestCase):
         self.assertIn("projects", path.parts)
         self.assertIn("-tmp-test-project", str(path))
 
+    @patch.dict(os.environ)
     def test_get_global_queue_path(self):
         """Test legacy global queue path."""
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
         from lib.reflect_utils import get_global_queue_path
         path = get_global_queue_path()
         self.assertIsInstance(path, Path)
         self.assertEqual(path.name, "learnings-queue.json")
         self.assertEqual(path.parent.name, ".claude")
 
+    @patch.dict(os.environ)
     def test_get_backup_dir(self):
         """Test backup dir returns correct location."""
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
         path = get_backup_dir()
         self.assertIsInstance(path, Path)
         self.assertEqual(path.name, "learnings-backups")
         self.assertEqual(path.parent.name, ".claude")
 
+    @patch.dict(os.environ)
     def test_get_claude_dir(self):
         """Test claude dir returns correct location."""
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
         path = get_claude_dir()
         self.assertIsInstance(path, Path)
         self.assertEqual(path.name, ".claude")
+
+    @patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/tmp/alt-claude"})
+    def test_claude_config_dir_overrides_paths(self):
+        """CLAUDE_CONFIG_DIR moves every config path, like Claude Code does."""
+        from lib.reflect_utils import get_global_queue_path
+        self.assertEqual(get_claude_dir(), Path("/tmp/alt-claude"))
+        self.assertEqual(get_backup_dir(), Path("/tmp/alt-claude/learnings-backups"))
+        self.assertEqual(get_global_queue_path(), Path("/tmp/alt-claude/learnings-queue.json"))
+        self.assertEqual(get_queue_path("/tmp/test-project").parent.parent, Path("/tmp/alt-claude/projects"))
 
 
 class TestQueueOperations(unittest.TestCase):
