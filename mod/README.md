@@ -53,7 +53,7 @@ Use either this or the Python plugin, not both (every correction would be captur
    ```
 
    A rule already in the file (as any bullet) is not added twice. Broken markers stop the write instead of guessing.
-   The saved rule also goes into this session's system prompt (only while you stay in the project it belongs to).
+   The saved rule also goes along with your next prompt in this session (only while you stay in the project it belongs to).
 
 `remember: <rule>` skips the model and goes straight to the band. `/reflect-queue` lists what was found here and
 globally; `/reflect-pause` stops and resumes checking.
