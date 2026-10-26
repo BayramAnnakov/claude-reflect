@@ -5,6 +5,7 @@ import type { Learning, SavedRule } from '../types'
 
 const pending = atom({ plugin: 'reflect-mod', key: 'pending' } as const, [])
 const savedThisSession = atom({ plugin: 'reflect-mod', key: 'savedThisSession' } as const, [])
+const handedOver = atom({ plugin: 'reflect-mod', key: 'handedOver' } as const, [])
 
 /** Longer prompts are task briefs and pastes, not corrections (unless they say "remember:"). */
 const MAX_PROMPT = 500
@@ -323,7 +324,7 @@ export const register: Register = (on, options) => {
   })
 
   // Only cheap checks here: the prompt goes on at once, the work runs on a timer.
-  on('prompt.submit', ($, e, next) => {
+  on('prompt.submit', async ($, e, next) => {
     const text = e.text.trim()
     const isCandidate =
       HUMAN.has(e.origin.kind) &&
@@ -335,22 +336,22 @@ export const register: Register = (on, options) => {
       queue.push(text)
       $.clock.after(0, () => void drain($).catch(() => undefined))
     }
-    return next(e)
+    if (e.command) return next(e)
+    // sec-default skips an installed plugin's prompt.compose, so saved rules ride along with the next prompt instead.
+    const root = await $.session.root()
+    const handed = await read($, handedOver)
+    const rules = (await read($, savedThisSession)).filter(r => (r.scope === 'global' || r.project === root) && !handed.includes(r.rule))
+    if (rules.length === 0) return next(e)
+    const note = ['Rules the user saved this session (they are in CLAUDE.md too; follow them):', ...rules.map(r => `- ${r.rule}`)].join('\n')
+    const result = await next({ ...e, context: [...(e.context ?? []), note] })
+    if (!result.drop) await update($, handedOver, list => [...list, ...rules.map(r => r.rule)])
+    return result
   })
 
   // Another session may have found or decided learnings: draw what the store holds now.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) await refreshBand($).catch(() => undefined)
     return next(e)
-  })
-
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    const root = await $.session.root()
-    const rules = (await read($, savedThisSession)).filter(r => r.scope === 'global' || r.project === root)
-    if (rules.length === 0) return composed
-    const text = ['Rules the user saved this session (they are in CLAUDE.md too; follow them):', ...rules.map(r => `- ${r.rule}`)].join('\n')
-    return { sections: [...composed.sections, { id: 'reflect-mod:saved', text, scope: 'session' as const }] }
   })
 
   on('command.run', { command: 'reflect-queue' }, async $ => {

@@ -22,8 +22,10 @@ declare module 'claude-code' {
     'reflect-mod': {
       /** Pending learnings for this project and global ones, as the band draws them. */
       pending: Learning[]
-      /** Rules saved in this session: the system prompt carries them until CLAUDE.md is read again. */
+      /** Rules saved in this session: the next prompt carries them until CLAUDE.md is read again. */
       savedThisSession: SavedRule[]
+      /** Saved rules already handed to the model with a prompt. */
+      handedOver: string[]
     }
   }
 }

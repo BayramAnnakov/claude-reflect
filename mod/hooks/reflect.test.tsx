@@ -48,9 +48,12 @@ function world(on: On, opts: Opts = {}) {
   on('ui.toast', async () => VOID)
   on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }) as never)
   on('session.start', async () => ({ cwd: '/repo' }) as never)
-  on('prompt.submit', async ($, e) => ({ text: e.text }))
-  on('prompt.compose', async () => ({ sections: [] }))
-  return { clock, files, asked, systems, filled }
+  const context: string[][] = []
+  on('prompt.submit', async ($, e) => {
+    context.push([...(e.context ?? [])])
+    return { text: e.text }
+  })
+  return { clock, files, asked, systems, filled, context }
 }
 
 const start = ($: Engine) => $.session.start({ source: 'startup', cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
@@ -72,8 +75,10 @@ async function press($: Engine, prefix: string) {
   await ui.press({ key })
   await ui.unmount()
 }
-const compose = ($: Engine) =>
-  $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as never)
+async function handed($: Engine, w: { context: string[][]; clock: { settle: () => Promise<void> } }) {
+  await say($, w, 'ok')
+  return w.context.at(-1) ?? []
+}
 
 const PNPM = { is_rule: true, rule: 'Use pnpm, not npm, in this repo', scope: 'project', confidence: 0.92 }
 
@@ -120,7 +125,8 @@ test('a Russian correction becomes a band row, and Save writes the repo CLAUDE.m
   await press($, 'save:')
   expect(w.files['/repo/CLAUDE.md']).toContain('- Use pnpm, not npm, in this repo\n<!-- end claude-reflect -->')
   expect(await rows($)).toEqual([])
-  expect((await compose($)).sections.at(-1)?.text).toContain('- Use pnpm, not npm, in this repo')
+  expect((await handed($, w)).join('\n')).toContain('- Use pnpm, not npm, in this repo')
+  expect(await handed($, w)).toEqual([])
 })
 
 test('a project rule saved in one repo stays out of another repo\'s prompt', async ($, on) => {
@@ -130,7 +136,7 @@ test('a project rule saved in one repo stays out of another repo\'s prompt', asy
   await say($, w, 'нет, используй pnpm')
   await press($, 'save:')
   root = '/other'
-  expect((await compose($)).sections).toEqual([])
+  expect(await handed($, w)).toEqual([])
 })
 
 test('"This repo instead" writes the repo the session is in now, not the one the rule was heard in', async ($, on) => {
