@@ -163,8 +163,21 @@ async function refreshBand($: EngineInterface) {
   await update($, pending, () => mine)
 }
 
+/**
+ * The user's home folder: HOME on macOS and Linux, USERPROFILE on Windows, where HOME is
+ * usually unset. Undefined when neither is set, so a global save is refused instead of
+ * landing at the root of the drive ("/.claude/CLAUDE.md").
+ */
+async function homeDir($: EngineInterface) {
+  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE'))
+  return home ? home.replace(/[\\/]+$/, '') : undefined
+}
+
 async function fileFor($: EngineInterface, scope: 'global' | 'project', root: string) {
-  if (scope === 'global') return `${(await $.env.get('HOME')) ?? ''}/.claude/CLAUDE.md`
+  if (scope === 'global') {
+    const home = await homeDir($)
+    return home === undefined ? undefined : `${home}/.claude/CLAUDE.md`
+  }
   return `${root}/CLAUDE.md`
 }
 
@@ -190,7 +203,8 @@ async function record($: EngineInterface, v: Verdict, root: string, isExplicit: 
     await saveItems($, list)
     return
   }
-  const target = await readText($, await fileFor($, v.scope, root))
+  const targetPath = await fileFor($, v.scope, root)
+  const target = targetPath === undefined ? '' : await readText($, targetPath)
   const isKnown = target
     .split('\n')
     .some(line => /^\s*[-*] /.test(line) && similarity(line.replace(/^\s*[-*]\s+/, ''), v.rule) >= SAME)
@@ -282,6 +296,10 @@ async function saveTo($: EngineInterface, l: Learning, scope: 'global' | 'projec
     if (latest === undefined || latest.status !== 'pending') return
     const root = await $.session.root()
     const path = await fileFor($, scope, root)
+    if (path === undefined) {
+      $.ui.toast('reflect: no home folder found (HOME and USERPROFILE are unset) - use "This repo instead", nothing written')
+      return
+    }
     const before = await readText($, path)
     const after = withRule(before, l.rule)
     if (after === undefined) {

@@ -12,13 +12,19 @@ type Opts = {
   files?: Record<string, string>
   root?: () => string
   box?: string
+  env?: Record<string, string>
 }
 
 function world(on: On, opts: Opts = {}) {
   const clock = mock.clock(on, { now: Date.parse('2026-10-02T12:00:00Z') })
   mock.store(on, {})
-  mock.env(on, { HOME: '/home/u' })
-  const files: Record<string, string> = { ...(opts.files ?? {}) }
+  mock.env(on, opts.env ?? { HOME: '/home/u' })
+  // On Windows the engine hands paths over in its own form ("C:\repo\CLAUDE.md"
+  // for "/repo/CLAUDE.md"), so the fake disk keys every path one way.
+  const key = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+  const files: Record<string, string> = Object.fromEntries(
+    Object.entries(opts.files ?? {}).map(([p, t]) => [key(p), t]),
+  )
   const asked: string[] = []
   const systems: string[] = []
   const filled: string[] = []
@@ -33,10 +39,10 @@ function world(on: On, opts: Opts = {}) {
   })
   on('session.messages', async () => ok([{ role: 'assistant', text: 'I used npm to install it.', toolUses: [] }]))
   on('session.root', async () => ok(opts.root?.() ?? '/repo'))
-  on('fs.exists', async ($, e) => ok(e.path in files))
-  on('fs.read', async ($, e) => ok(files[e.path] ?? ''))
+  on('fs.exists', async ($, e) => ok(key(e.path) in files))
+  on('fs.read', async ($, e) => ok(files[key(e.path)] ?? ''))
   on('fs.write', async ($, e) => {
-    files[e.path] = e.text
+    files[key(e.path)] = e.text
     return VOID
   })
   on('prompt.read', async () => ok({ text: opts.box ?? '', cursor: 0 }))
@@ -209,6 +215,35 @@ test('known rules, weak or broken verdicts and failing calls leave no row, and l
   await start($)
   for (const t of ['нет, используй pnpm', 'maybe tabs?', 'no, the other way', 'model is blocked now', 'always answer in English']) await say($, w, t)
   expect(w.asked).toHaveLength(5)
+  expect(await rows($)).toEqual(['reflect · "Answer in English"'])
+})
+
+const ENGLISH = { 'always answer in English': { is_rule: true, rule: 'Answer in English', scope: 'global', confidence: 0.9 } }
+
+test('a global save goes to HOME/.claude/CLAUDE.md where HOME is set', async ($, on) => {
+  const w = world(on, { verdicts: ENGLISH })
+  await start($)
+  await say($, w, 'always answer in English')
+  await press($, 'save:')
+  expect(w.files['/home/u/.claude/CLAUDE.md']).toContain('- Answer in English')
+})
+
+test('on Windows, with HOME unset, a global save goes to USERPROFILE/.claude/CLAUDE.md', async ($, on) => {
+  const w = world(on, { verdicts: ENGLISH, env: { USERPROFILE: 'C:\\Users\\u\\' } })
+  await start($)
+  await say($, w, 'always answer in English')
+  await press($, 'save:')
+  expect(w.files['/Users/u/.claude/CLAUDE.md']).toContain('- Answer in English')
+  expect(w.files['/.claude/CLAUDE.md']).toBeUndefined()
+})
+
+test('with no home folder at all, a global save writes nothing and the row stays', async ($, on) => {
+  const w = world(on, { verdicts: ENGLISH, env: {} })
+  await start($)
+  await say($, w, 'always answer in English')
+  await press($, 'save:')
+  expect(w.files['/.claude/CLAUDE.md']).toBeUndefined()
+  expect(Object.keys(w.files)).toEqual([])
   expect(await rows($)).toEqual(['reflect · "Answer in English"'])
 })
 
