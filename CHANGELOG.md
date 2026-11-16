@@ -5,6 +5,12 @@ All notable changes to claude-reflect will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **reflect-mod: global saves on Windows.** The global target was `$HOME/.claude/CLAUDE.md`, and Windows usually leaves `HOME` unset, so a global save wrote `/.claude/CLAUDE.md` at the root of the drive, where Claude Code never reads it. The home folder now falls back to `USERPROFILE`, and a global save with neither set is refused with a toast instead of written.
+- reflect-mod tests: the fake disk keys paths one way, so the file tests also pass on Windows, where the engine hands paths over as `C:\repo\CLAUDE.md`. Three tests added for the home folder (13 in all).
+
 ## [3.3.1] - 2026-10-02
 
 ### Docs
