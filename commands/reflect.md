@@ -16,11 +16,13 @@ allowed-tools: Read, Edit, Write, Glob, Bash, Grep, AskUserQuestion, TodoWrite
 
 ## Context
 - Project CLAUDE.md: @CLAUDE.md
-- Global CLAUDE.md: @~/.claude/CLAUDE.md
+- Global CLAUDE.md: !`cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md" 2>/dev/null`
 - Learnings queue (per-project): !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/read_queue.py" 2>/dev/null || echo "[]"`
 - Current project: !`pwd`
 
 ## Multi-Target Export
+
+`~/.claude` below means `$CLAUDE_CONFIG_DIR` when that variable is set. `project_paths.py` prints the resolved `claude_dir` and `global_claude_md`.
 
 Claude-reflect syncs learnings to CLAUDE.md files (including subdirectories), skill files, and AGENTS.md.
 
@@ -63,7 +65,7 @@ find . -name "CLAUDE.md" -type f \
 # Also check rule files and local
 ls .claude/rules/*.md 2>/dev/null
 ls CLAUDE.local.md 2>/dev/null
-ls ~/.claude/rules/*.md 2>/dev/null
+ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/rules/*.md 2>/dev/null
 ```
 
 **Target Selection (Hierarchy-Aware Routing):**

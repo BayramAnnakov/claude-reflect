@@ -361,6 +361,10 @@ class TestReadAllMemoryEntries(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
     def tearDown(self):
         import shutil

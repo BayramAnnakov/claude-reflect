@@ -52,6 +52,8 @@ def main() -> int:
         )
 
     print(json.dumps({
+        "claude_dir": str(get_claude_dir()),
+        "global_claude_md": str(get_claude_dir() / "CLAUDE.md"),
         "project_dir": str(project),
         "folder_name": folder,
         "session_dir": str(session_dir),
