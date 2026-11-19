@@ -85,7 +85,7 @@ prints. If `session_dir_exists` is false, report that and stop.
 If `--all-projects` is specified:
 ```bash
 # Find all project session directories
-ls -la ~/.claude/projects/ 2>/dev/null | head -20
+ls -la "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/ 2>/dev/null | head -20
 ```
 
 Find session files:
@@ -120,7 +120,7 @@ Before analyzing patterns, discover what skills already exist:
 ls .claude/commands/*.md 2>/dev/null | xargs -I{} basename {} .md
 
 # Check global commands
-ls ~/.claude/commands/*.md 2>/dev/null | xargs -I{} basename {} .md
+ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/commands/*.md 2>/dev/null | xargs -I{} basename {} .md
 ```
 
 Store the list of existing command names. During pattern analysis (Step 4), if a pattern's suggested name matches an existing command:

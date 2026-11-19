@@ -62,7 +62,7 @@ def get_queue_path(project_dir: Optional[str] = None) -> Path:
         return get_claude_dir() / "projects" / folder_name / "learnings-queue.json"
     except Exception:
         # Fallback to global path if encoding fails
-        return Path.home() / ".claude" / "learnings-queue.json"
+        return get_claude_dir() / "learnings-queue.json"
 
 
 def project_dir_from_transcript(transcript_path: Optional[str]) -> Optional[Path]:
@@ -136,7 +136,7 @@ def get_global_queue_path() -> Path:
     Used for migration: items from the old global queue are distributed
     to their per-project queues on first access.
     """
-    return Path.home() / ".claude" / "learnings-queue.json"
+    return get_claude_dir() / "learnings-queue.json"
 
 
 def migrate_global_queue() -> None:
@@ -197,12 +197,32 @@ def migrate_global_queue() -> None:
 
 def get_backup_dir() -> Path:
     """Get path to learnings backup directory."""
-    return Path.home() / ".claude" / "learnings-backups"
+    return get_claude_dir() / "learnings-backups"
 
 
 def get_claude_dir() -> Path:
-    """Get path to .claude directory."""
+    """Get the Claude Code config directory.
+
+    Claude Code reads ``CLAUDE_CONFIG_DIR`` to relocate everything it keeps
+    under ``~/.claude`` (settings, CLAUDE.md, projects, transcripts). The hook
+    already writes the queue next to the transcript, so reading from a
+    hardcoded ``~/.claude`` would miss it whenever the variable is set.
+    """
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    if configured:
+        return Path(configured).expanduser()
     return Path.home() / ".claude"
+
+
+def _config_dir_label(rel: str) -> str:
+    """Display label for a file in the config dir: ~/.claude/<rel> by default."""
+    if not os.environ.get("CLAUDE_CONFIG_DIR"):
+        return f"~/.claude/{rel}"
+    claude_dir = get_claude_dir()
+    try:
+        return f"~/{claude_dir.relative_to(Path.home()).as_posix()}/{rel}"
+    except ValueError:
+        return f"{claude_dir.as_posix()}/{rel}"
 
 
 def get_cleanup_period_days() -> Optional[int]:
@@ -574,7 +594,7 @@ def find_claude_files(
     if global_claude.exists():
         results.append({
             "path": str(global_claude),
-            "relative_path": "~/.claude/CLAUDE.md",
+            "relative_path": _config_dir_label("CLAUDE.md"),
             "type": "global",
         })
 
@@ -635,7 +655,7 @@ def find_claude_files(
             frontmatter = _parse_rule_frontmatter(rule_file)
             results.append({
                 "path": str(rule_file),
-                "relative_path": f"~/.claude/rules/{rule_file.name}",
+                "relative_path": _config_dir_label(f"rules/{rule_file.name}"),
                 "type": "user-rule",
                 "frontmatter": frontmatter,
             })

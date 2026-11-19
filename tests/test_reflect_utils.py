@@ -36,6 +36,12 @@ from lib.reflect_utils import (
 class TestPathUtilities(unittest.TestCase):
     """Tests for path utility functions."""
 
+    def setUp(self):
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
     def test_get_queue_path(self):
         """Test queue path returns correct per-project location."""
         path = get_queue_path()
@@ -72,6 +78,42 @@ class TestPathUtilities(unittest.TestCase):
         path = get_claude_dir()
         self.assertIsInstance(path, Path)
         self.assertEqual(path.name, ".claude")
+
+    def test_get_claude_dir_honors_config_dir(self):
+        """CLAUDE_CONFIG_DIR relocates the config dir, as in Claude Code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": tmp}):
+                self.assertEqual(get_claude_dir(), Path(tmp))
+                self.assertEqual(get_backup_dir(), Path(tmp) / "learnings-backups")
+                from lib.reflect_utils import (
+                    get_auto_memory_path,
+                    get_global_queue_path,
+                    get_project_folder_name,
+                )
+                folder = Path(tmp) / "projects" / get_project_folder_name("/tmp/test-project")
+                self.assertEqual(get_queue_path("/tmp/test-project"), folder / "learnings-queue.json")
+                self.assertEqual(get_auto_memory_path("/tmp/test-project"), folder / "memory")
+                self.assertEqual(get_global_queue_path(), Path(tmp) / "learnings-queue.json")
+
+    def test_get_claude_dir_ignores_empty_config_dir(self):
+        """An empty CLAUDE_CONFIG_DIR falls back to ~/.claude."""
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}):
+            self.assertEqual(get_claude_dir(), Path.home() / ".claude")
+
+    def test_find_claude_files_uses_config_dir(self):
+        """Global CLAUDE.md and user rules come from CLAUDE_CONFIG_DIR."""
+        from lib.reflect_utils import find_claude_files
+        with tempfile.TemporaryDirectory() as cfg, tempfile.TemporaryDirectory() as proj:
+            Path(cfg, "CLAUDE.md").write_text("# global\n")
+            Path(cfg, "rules").mkdir()
+            Path(cfg, "rules", "style.md").write_text("- rule\n")
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
+                files = find_claude_files(proj, follow_includes=False)
+            by_type = {f["type"]: f for f in files}
+            self.assertEqual(Path(by_type["global"]["path"]), Path(cfg) / "CLAUDE.md")
+            self.assertEqual(Path(by_type["user-rule"]["path"]), Path(cfg) / "rules" / "style.md")
+            self.assertEqual(by_type["global"]["relative_path"], str(Path(cfg) / "CLAUDE.md"))
+            self.assertEqual(by_type["user-rule"]["relative_path"], str(Path(cfg) / "rules" / "style.md"))
 
 
 class TestQueueOperations(unittest.TestCase):
